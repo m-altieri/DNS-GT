@@ -13,7 +13,7 @@ git clone https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
 
 ### Get the data:
 ```
-mkdir -p datasets/TI-2016-Partial && cd datasets/TI-2016-Partial
+mkdir -p cdp-bari/datasets/TI-2016-Partial && cd cdp-bari/datasets/TI-2016-Partial
 wget https://prod-dcd-datasets-cache-zipfiles.s3.eu-west-1.amazonaws.com/zh3wnddzxy-2.zip
 unzip zh3wnddzxy-2.zip && rm -rf zh3wnddzxy-2.zip
 ```

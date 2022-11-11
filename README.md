@@ -8,7 +8,7 @@ GNN-NIDS is a project for network intrusion detection based on DNS logs using gr
 
 ### Clone the repository:
 ```
-https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
+git clone https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
 ```
 
 ### Get the data:

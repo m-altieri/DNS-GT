@@ -1,22 +1,42 @@
+
 _This README is a draft and placeholder._
 
 # GNN-NIDS (CDP No. 35452 -- Bari)
 
 GNN-NIDS is a project for network intrusion detection based on DNS logs using graph neural networks.
 
-## Usage
+## Installation
 
 ### Clone the repository:
 ```
-git clone https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
+git clone ~/https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
 ```
 
 ### Get the data:
 ```
-mkdir -p cdp-bari/datasets/TI-2016-Partial && cd cdp-bari/datasets/TI-2016-Partial
+mkdir -p ~/cdp-bari/datasets/TI-2016-Partial && cd cdp-bari/datasets/TI-2016-Partial
 wget https://prod-dcd-datasets-cache-zipfiles.s3.eu-west-1.amazonaws.com/zh3wnddzxy-2.zip
 unzip zh3wnddzxy-2.zip && rm -rf zh3wnddzxy-2.zip
 ```
+
+### Install the required libraries:
+
+For example,
+```
+python3 -m pip install <requirement>
+```
+
+## Usage
+
+### Quick Start
+
+Launch the script with the smallest `.pcap` file:
+```
+cd ~/cdp-bari/src
+cp ../datasets/TI-2016-Partial/Day0_24_04_2016/20160424_055409.pcap .
+python3 preprocess.py -v .
+```
+
 
 ## Suggestions for a good README
 Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
@@ -60,3 +80,4 @@ For open source projects, say how it is licensed.
 
 ## Project status
 If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+

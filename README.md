@@ -9,12 +9,12 @@ GNN-NIDS is a project for network intrusion detection based on DNS logs using gr
 
 ### Clone the repository:
 ```
-git clone ~/https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git
+git clone https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari.git ~/gnn-nids
 ```
 
 ### Get the data:
 ```
-mkdir -p ~/cdp-bari/datasets/TI-2016-Partial && cd cdp-bari/datasets/TI-2016-Partial
+mkdir -p ~/gnn-nids/datasets/TI-2016-Partial && cd gnn-nids/datasets/TI-2016-Partial
 wget https://prod-dcd-datasets-cache-zipfiles.s3.eu-west-1.amazonaws.com/zh3wnddzxy-2.zip
 unzip zh3wnddzxy-2.zip && rm -rf zh3wnddzxy-2.zip
 ```
@@ -32,11 +32,10 @@ python3 -m pip install <requirement>
 
 Launch the script with the smallest `.pcap` file:
 ```
-cd ~/cdp-bari/src
+cd ~/gnn-nids/src
 cp ../datasets/TI-2016-Partial/Day0_24_04_2016/20160424_055409.pcap .
 python3 preprocess.py -v .
 ```
-
 
 ## Suggestions for a good README
 Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.

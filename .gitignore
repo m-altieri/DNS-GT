@@ -1,2 +1,8 @@
 datasets/CIC*
 datasets/TI-2016-Partial/*
+scripts/
+src/__pycache__/
+src/preprocessed/
+src/log.txt
+src/output.txt
+

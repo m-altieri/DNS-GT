@@ -3,7 +3,7 @@ _This README is a draft and placeholder._
 
 # GNN-NIDS (CDP No. 35452 -- Bari)
 
-GNN-NIDS is a project for network intrusion detection based on DNS logs using graph neural networks..
+GNN-NIDS is a project for network intrusion detection based on DNS logs using graph neural networks.
 
 ## Installation
 

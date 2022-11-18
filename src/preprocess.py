@@ -10,41 +10,48 @@ from colorama import Fore, Style
 from pprint import pprint
 import pandas as pd
 import traceback
-
-argparser = argparse.ArgumentParser()
-argparser.add_argument('files', action='append')
-argparser.add_argument('-v', '--verbose', action='store_const', const=True, required=False, dest='verbose')
-argparser.add_argument('-o', '--output-folder', action='store', required=False, default='preprocessed', dest='output_folder')
-argparser.add_argument('--file-log', action='store_const', const=True, required=False, default=False, dest='file_log')
-args = argparser.parse_args()
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-def addLogLevel(level_name, level_num):
-   """Create a new logging level for the logger.
-
-   Args:
-      level_name (str): Name of the new level.
-      level_num (int): Logging priority of the new level. For reference, consult https://docs.python.org/3/library/logging.html#logging-levels.
+def _logger_setup(log_to_file=False, verbose=False):
+   """Create a new global logger for this file.
+      
+      `logger.critical()`, `logger.error()`, `logger.warning()` and `logger.info()` will always log the message.
+      `logger.debug()` will log the message if `verbose=True`.
+      `logger.trace()` will log the message *only to file* if `log_to_file=True`.
+      
+      Args:
+         log_to_file (bool, default=False): Whether you want to also log everything to file `log.txt`. Note that *all* logs are logged to file, even trace-level ones.
+         verbose (bool, default=False): If True, also log debug-level logs.
    """
-   logging.Logger.trace = lambda self, msg, *args, **kws: logger._log(level_num, msg, args, **kws)
-   setattr(logging, level_name, level_num)
-   logging.addLevelName(level_num, level_name)
+   global logger
+   logger = logging.getLogger(__name__)
+   
+   def _addLogLevel(level_name, level_num):
+      """Create a new logging level for the logger.
 
-
-logger = logging.getLogger(__name__)
-addLogLevel('TRACE', 5)
-logger.setLevel(logging.INFO)
-logFormatter = logging.Formatter("[%(levelname)-5.5s]  %(message)s")
-consoleHandler = logging.StreamHandler(sys.stdout)
-consoleHandler.setLevel('DEBUG')
-logger.addHandler(consoleHandler)
-fileHandler = logging.FileHandler('log.txt')
-fileHandler.setFormatter(logFormatter)
-fileHandler.setLevel(logging.TRACE)
-if args.file_log:
-   logger.addHandler(fileHandler)
-if args.verbose:
-   logger.setLevel(logging.DEBUG)
+      Args:
+         level_name (str): Name of the new level.
+         level_num (int): Logging priority of the new level. For reference, consult https://docs.python.org/3/library/logging.html#logging-levels.
+      """
+      logging.Logger.trace = lambda self, msg, *args, **kws: logger._log(level_num, msg, args, **kws)
+      setattr(logging, level_name, level_num)
+      logging.addLevelName(level_num, level_name)
+   
+   _addLogLevel('TRACE', 5)
+   logger.setLevel(logging.INFO)
+   consoleHandler = logging.StreamHandler(sys.stdout)
+   consoleHandler.setLevel('DEBUG')
+   logger.addHandler(consoleHandler)
+   if log_to_file:
+      logFormatter = logging.Formatter("[%(levelname)-5.5s]  %(message)s")
+      fileHandler = logging.FileHandler('log.txt')
+      fileHandler.setFormatter(logFormatter)
+      fileHandler.setLevel(logging.TRACE)
+      logger.addHandler(fileHandler)
+   if verbose:
+      logger.setLevel(logging.DEBUG)
 
 
 def indent(depth: int, length: int = 2) -> str:
@@ -238,6 +245,17 @@ def check_packet(p):
    
    
 def main(argv):
+
+   argparser = argparse.ArgumentParser()
+   argparser.add_argument('files', action='append')
+   argparser.add_argument('-v', '--verbose', action='store_const', const=True, required=False, dest='verbose')
+   argparser.add_argument('-o', '--output-folder', action='store', required=False, default='preprocessed', dest='output_folder')
+   argparser.add_argument('-r', '--response-only', action='store_const', const=True, required=False, default=False, dest='response_only')
+   argparser.add_argument('--file-log', action='store_const', const=True, required=False, default=False, dest='file_log')
+   args = argparser.parse_args()
+   
+   _logger_setup(args.file_log, args.verbose)
+   
    start_time = time.time()
 
    logger.info(f'\n{Style.BRIGHT}Retrieving PCAP files from {", ".join(args.files)}{Style.RESET_ALL}')
@@ -258,6 +276,8 @@ def main(argv):
 
       resolved, unresolved = [], [] # using a specific list to find unresolved queries should be faster
       stats = {'requests': 0, 'responses': 0, 'matched_responses': 0, 'bad_packets': 0}
+      requests, responses, matched_responses = [], [], []
+      
       for i, pkt in enumerate(pcap):
          if pkt.getlayer('DNS') and pkt.getlayer('DNS').opcode == 0:
             try:
@@ -274,87 +294,82 @@ def main(argv):
                
             if info['dst_port'] == 53: # it is a request, right? so it must be a new query
                stats['requests'] += 1
+               requests.append(1)
+               responses.append(0)
+               matched_responses.append(0)
                logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Packet {i} is a request. Appending it to the unresolved list...{Style.RESET_ALL}')
                try:
                   unresolved.append({f'req_{i}': info[i] for i in info}) # prefix each key in info with 'req_'
-                  '''
-                  unresolved.append({'qry_id': info['qry_id'], 
-                                     'req_ts': info['ts'],
-                                     'req_src_ip': info['src_ip'], 
-                                     'req_src_port': info['src_port'], 
-                                     'req_dst_ip': info['dst_ip'], 
-                                     'req_dst_port': info['dst_port'], 
-                                     'qtype': info['qtype'],
-                                     'domain': info['qry_domain'],
-                                     'req_qdcount': info['qdcount'],
-                                     'req_ancount': info['ancount'],
-                                     'req_nscount': info['nscount'],
-                                     'req_arcount': info['arcount']})
-                  '''
                except KeyError as e:
                   logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i}: Some fields could not be found in request query.{Style.RESET_ALL}')
                   logger.debug(f'{Fore.RED}Cause of the exception: {e}{Style.RESET_ALL}')
                
             elif info['src_port'] == 53: # this means it's a response, right? so there must be a preexisting unresolved query
                stats['responses'] += 1
+               requests.append(0)
+               responses.append(1)
                logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Packet is a response. Matching it with its respective unresolved request...{Style.RESET_ALL}')
                
-               try: # look for the preexisting unresolved query
-                  cond = lambda q: q['qry_id'] == info['qry_id'] and \
-                                   q['req_src_ip'] == info['dst_ip'] and q['req_src_port'] == info['dst_port'] and \
-                                   q['req_dst_ip'] == info['src_ip'] and q['req_dst_port'] == info['src_port']
-                  qry = dict_filter(unresolved, cond, require_unique=True)[0]
+               qry = {}
+               try:
+                  if not args.response_only: # look for the preexisting unresolved query
+                     cond = lambda q: q['req_qry_id'] == info['qry_id'] and \
+                                      q['req_src_ip'] == info['dst_ip'] and q['req_src_port'] == info['dst_port'] and \
+                                      q['req_dst_ip'] == info['src_ip'] and q['req_dst_port'] == info['src_port']
+                     qry = dict_filter(unresolved, cond, require_unique=True)[0]
+                     
+                     unresolved.remove(qry) # remove the now-resolved query from the unresolved list ...
+                     stats['matched_responses'] += 1
+                     matched_responses.append(1)
+                     logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Matched: the pre-existing query has been successfully resolved.{Style.RESET_ALL}')
+                  else:
+                     logger.debug('Did not attempt to match the query since flag -r is set.')
                except Exception as e:
                   logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i}: Query response doesn\'t match any pre-existing unresolved query.{Style.RESET_ALL}')
-                  logger.error(f'{Fore.RED}Cause of the exception: {e}{Style.RESET_ALL}')
-                  continue # @TODO actually handle exception. What if the query it refers to was actually present, and I didn't match it correctly?
-                  
-               try: # add the response field to the found query
-                  qry = qry | {f'res_{i}': info[i] for i in info} # prefix each key in info with 'res_' and pour it into qry
-                  '''
-                  qry['res_ts'] = info['ts']
-                  qry['res_src_ip'] = info['src_ip']
-                  qry['res_src_port'] = info['src_port']
-                  qry['res_dst_ip'] = info['dst_ip']
-                  qry['res_dst_port'] = info['dst_port']
-                  if 'ip' in info: qry['ip'] = info['ip']
-                  if 'qdcount' in info: qry['res_qdcount'] = info['qdcount']
-                  if 'ancount' in info: qry['res_ancount'] = info['ancount']
-                  if 'nscount' in info: qry['res_nscount'] = info['nscount']
-                  if 'arcount' in info: qry['res_arcount'] = info['arcount']
-                  '''
-               except KeyError as e:
-                  logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i}: Some fields could not be found in response query.{Style.RESET_ALL}')
                   logger.debug(f'{Fore.RED}Cause of the exception: {e}{Style.RESET_ALL}')
-                  continue
+                  matched_responses.append(0)
+               finally: # @ NOTE: Now resolved doesn't mean matched! there is no more check on request-response matching 
+                  qry = qry | {f'res_{i}': info[i] for i in info} # prefix each key in info with 'res_' and pour it into qry
+                  resolved.append(qry) # ... and add it to the "resolved" list
                   
-               resolved.append(qry) # add the now-resolved query to the resolved list ...
-               unresolved.remove(qry) # ... and remove it from the unresolved list
-               stats['matched_responses'] += 1
-               logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Matched: the pre-existing query has been successfully resolved.{Style.RESET_ALL}')
-               
+            else:
+               stats['bad_packets'] += 1
+               requests.append(0)
+               responses.append(0)
+               matched_responses.append(0)
+               logger.error(f"{Fore.RED}Packet {i} is a DNS Query with opcode 0, but neither src_port nor dst_port is 53 (src_port: {info['src_port']}, dst_port: {info['dst_port']}).{Style.RESET_ALL}") 
             # all_queries[info['src_ip']].append(info['qry_domain'])
 
-         elif pkt.getlayer('DNS') and pkt.getlayer('DNS').opcode != 0:
-            # @TODO What does opcode != 0 mean? What do I have to do in this case?
+         elif pkt.getlayer('DNS') and pkt.getlayer('DNS').opcode != 0: # @TODO What does opcode != 0 mean? What do I have to do in this case?
             stats['bad_packets'] += 1
+            requests.append(0)
+            responses.append(0)
+            matched_responses.append(0)
             logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i} is a DNS Query but has a non-zero opcode: {pkt.getlayer("DNS").opcode}{Style.RESET_ALL}')
+         
          else:
             stats['bad_packets'] += 1
+            requests.append(0)
+            responses.append(0)
+            matched_responses.append(0)
             logger.error(f'{Fore.RED}Packet {i} is NOT a DNS packet.{Style.RESET_ALL}')
-      try: # @TODO check if it works, then remove try block
-         logger.info(f"{Style.BRIGHT}Finished analyzing {fname}:{Style.RESET_ALL}")
-         logger.info(f"{f'{indent(1)}Total packets:':<25} {i+1}\n{f'{indent(1)}Resolved packets:':<25} {len(resolved)} (x2)\n{f'{indent(1)}Unresolved requests:':<25} {len(unresolved)}\n{f'{indent(1)}Skipped packets:':<25} {i+1 - 2*len(resolved) - len(unresolved)}")
-         try:
-            logger.info(f"\nRequests: {stats['requests']}\nResponses: {stats['responses']}\nMatched responses: {stats['matched_responses']}\nBad packets: {stats['bad_packets']}")
-         except Exception as e:
-            sys.exit('Tutto ok, il logging è rotto, fixa il bug') # @TODO if it works, delete this try block
-      except Exception as e:
-         logger.info(f'It finished, but fix this bug\n{e}')
+      
+      # save statistics
+      #np.save('../stats/requests.npy', requests)
+      #np.save('../stats/responses.npy', responses)
+      #np.save('../stats/matched_responses.npy', matched_responses)
+      
+      # log results and stats
+      logger.info(f"{Style.BRIGHT}Finished analyzing {fname}:{Style.RESET_ALL}")
+      logger.info('Stats may not work.')
+      logger.info(f"{f'{indent(1)}Total packets:':<25} {i+1}\n{f'{indent(1)}Resolved packets:':<25} {len(resolved)} (x2)\n{f'{indent(1)}Unresolved requests:':<25} {len(unresolved)}\n{f'{indent(1)}Skipped packets:':<25} {i+1 - 2*len(resolved) - len(unresolved)}")
+      logger.info(f"\n{Style.BRIGHT}{indent(1)}Stats:{Style.RESET_ALL}\n{indent(1)}Requests: {stats['requests']}\n{indent(1)}Responses: {stats['responses']}\n{indent(1)}Matched responses: {stats['matched_responses']}\n{indent(1)}Bad packets: {stats['bad_packets']}")
+         
       # create DataFrame and save it to file
       logger.info('\nCreating DataFrame from resolved queries...')
       df = pd.DataFrame(resolved)
       logger.info('DataFrame created.')
+      
       logger.info(f'\nSaving DataFrame to {args.output_folder}...')
       if not os.path.isdir(args.output_folder):
          os.makedirs(args.output_folder)
@@ -371,6 +386,7 @@ def main(argv):
    #       else:
    #           logger.trace(f'{"":15} {query[1]:>7}  {query[0]:<}')
 
+   # log execution time
    logger.info(f'\n{Style.DIM}Execution time: {time.time() - start_time:.2f} seconds.{Style.RESET_ALL}')
    
    

@@ -5,4 +5,8 @@ src/__pycache__/
 src/preprocessed/
 src/log.txt
 src/output.txt
-
+stats/
+*.jpg
+*.pdf
+*.svg
+*.png

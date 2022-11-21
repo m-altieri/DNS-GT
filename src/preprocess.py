@@ -308,11 +308,35 @@ def main(argv):
                stats['responses'] += 1
                requests.append(0)
                responses.append(1)
-               logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Packet is a response. Matching it with its respective unresolved request...{Style.RESET_ALL}')
                
                qry = {}
+               
+               if not args.response_only: # look for the preexisting unresolved query
+                  logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Packet is a response. Matching it with its respective unresolved request...{Style.RESET_ALL}')
+                  try: # try to match; if you can't, doesn't matter, use what you have
+                     cond = lambda q: q['req_qry_id'] == info['qry_id'] and \
+                                      q['req_src_ip'] == info['dst_ip'] and q['req_src_port'] == info['dst_port'] and \
+                                      q['req_dst_ip'] == info['src_ip'] and q['req_dst_port'] == info['src_port']
+                     qry = dict_filter(unresolved, cond, require_unique=True)[0]
+                     
+                     unresolved.remove(qry) # remove the now-resolved query from the unresolved list ...
+                     
+                     stats['matched_responses'] += 1
+                     matched_responses.append(1)
+                     logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Matched: the pre-existing query has been successfully resolved.{Style.RESET_ALL}')
+                     
+                  except Exception as e:
+                     logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i}: Query response doesn\'t match any pre-existing unresolved query.{Style.RESET_ALL}')
+                     logger.debug(f'{Fore.RED}Cause of the exception: {e}{Style.RESET_ALL}')   
+                     
+               # whether you have matched or not, append the current packet
+               qry = qry | {f'res_{i}': info[i] for i in info} # prefix each key in info with 'res_' and pour it into qry
+               resolved.append(qry) # ... and add it to the "resolved" list @NOTE: now resolved includes all responses, matching is not required
+               
+               '''
                try:
                   if not args.response_only: # look for the preexisting unresolved query
+                     logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Packet is a response. Matching it with its respective unresolved request...{Style.RESET_ALL}')
                      cond = lambda q: q['req_qry_id'] == info['qry_id'] and \
                                       q['req_src_ip'] == info['dst_ip'] and q['req_src_port'] == info['dst_port'] and \
                                       q['req_dst_ip'] == info['src_ip'] and q['req_dst_port'] == info['src_port']
@@ -323,7 +347,7 @@ def main(argv):
                      matched_responses.append(1)
                      logger.debug(f'{Fore.GREEN}{Style.DIM}{indent(1)}Matched: the pre-existing query has been successfully resolved.{Style.RESET_ALL}')
                   else:
-                     logger.debug('Did not attempt to match the query since flag -r is set.')
+                     logger.debug(f'{Style.DIM}{indent(1)}Not attempting to match the query since flag -r is set.{Style.RESET_ALL}')
                except Exception as e:
                   logger.error(f'{Fore.RED}{Style.BRIGHT}Packet {i}: Query response doesn\'t match any pre-existing unresolved query.{Style.RESET_ALL}')
                   logger.debug(f'{Fore.RED}Cause of the exception: {e}{Style.RESET_ALL}')
@@ -331,7 +355,7 @@ def main(argv):
                finally: # @ NOTE: Now resolved doesn't mean matched! there is no more check on request-response matching 
                   qry = qry | {f'res_{i}': info[i] for i in info} # prefix each key in info with 'res_' and pour it into qry
                   resolved.append(qry) # ... and add it to the "resolved" list
-                  
+               '''
             else:
                stats['bad_packets'] += 1
                requests.append(0)

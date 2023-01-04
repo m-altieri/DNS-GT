@@ -1,9 +1,12 @@
-datasets/CIC*
-datasets/TI-2016-Partial/*
-scripts/
+*.pyc
+.tests
+datasets/
+outputs/
 src/__pycache__/
-src/preprocessed/
-src/log.txt
-src/output.txt
+src/checkpoints/
+src/models/__pycache__/
+src/preprocessing/arrays/
+src/preprocessing/preprocessed/
+src/scripts/
 stats/
 

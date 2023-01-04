@@ -178,6 +178,81 @@ DNS servers: 30
 >>> print(f'Received: {len([p for p in pcap if 'UDP' in p and p['IP'].dst=='8.8.8.8']}')
 ```
 
+## Local DNS Servers
+
+The amount of DNS servers that in turn make queries to other DNS servers or receive responses from other DNS servers are intermediate resolvers.
+We assume that the dataset only contains packets related to intermediate resolvers that are within the campus network.
+We can calculate how many intermediate local resolvers are in the campus network, as the amount of DNS servers that make queries or receive responses from other DNS servers.
+```python
+>>> dns_servers = src_servers | dst_servers
+```
+**Number of local querying intermediate resolvers: 6**
+```python
+>>> request_makers = set([p['IP'].src for p in pcap if 'UDP' in p and p['UDP'].dport == 53])
+>>> len(request_makers & dns_servers)
+6
+```
+**List of local querying intermediate resolvers:**
+```python
+>>> request_makers & dns_servers
+{'172.31.1.6',
+ '172.31.19.11',
+ '172.31.19.9',
+ '172.31.3.105',
+ '172.31.3.128',
+ '172.31.3.150'}
+```
+**Number of local response-receiving intermediate resolvers: 8**
+```python
+>>> response_receivers = set([p['IP'].dst for p in pcap if 'UDP' in p and p['UDP'].sport == 53])
+>>> len(response_receivers & dns_servers)
+8
+```
+**List of local response-receiving intermediate resolvers:**
+```python
+>>> response_receivers & dns_servers
+{'172.31.1.6',
+ '172.31.19.11',
+ '172.31.19.9',
+ '172.31.3.105',
+ '172.31.3.121',
+ '172.31.3.128',
+ '172.31.3.150',
+ '172.31.4.40'}
+```
+The two sets are very similar, with the exception of 172.31.3.121 and 172.31.4.40 which receive responses but don't make any query.
+
+We can also calculate the amount of queries made by the querying local DNS servers and the amount of responses received by the receiving local DNS servers.
+**Queries made by each local querying intermediate resolver:**
+```python
+>>> for ip in sorted(request_makers & dns_servers):
+...:     print(f"{ip:<16}: {len([p for p in pcap if p['IP'].src == ip and 'UDP' in p and p['UDP'].dport == 53])}")
+...: 
+172.31.1.6      : 54127
+172.31.19.11    : 194
+172.31.19.9     : 33
+172.31.3.105    : 182
+172.31.3.128    : 118
+172.31.3.150    : 1
+```
+**Responses received by each local receiving intermediate resolver:**
+```python
+>>> for ip in sorted(response_receivers & dns_servers):
+...:     print(f"{ip:<16}: {len([p for p in pcap if p['IP'].dst == ip and 'UDP' in p and p['UDP'].sport == 53])}")
+...: 
+172.31.1.6      : 54324
+172.31.19.11    : 125
+172.31.19.9     : 31
+172.31.3.105    : 182
+172.31.3.121    : 76787
+172.31.3.128    : 118
+172.31.3.150    : 1
+172.31.4.40     : 24
+```
+
+We can see that the main querying local DNS server is `172.31.1.6` and the main receiving local DNS servers are `172.31.3.121` and again `172.31.1.6`.
+
+
 ## Query Types
 ```python
 >>> set([p['DNSQR'].qtype for p in pcap if 'DNSQR' in p])
@@ -267,4 +342,66 @@ Type 42789 : 1
 It's noteworthy that some query types (especially 2 (NS), 43 (DNS) and 48 (DNSKEY)) appear almost exclusively in response queries.
 Moreover, only response queries contain malformed query types.
 The other query types are more or less balanced between requests and responses.
+
+## Hosts
+
+Hosts are considered as the IPs that make DNS requests but are not DNS servers themselves (they appear at the start of the DNS query chain),
+or the IPs that receive DNS responses but are not DNS servers themselves (they appear at the end of the DNS resolution chain).
+
+To obtain the first group of hosts, let's take all request makers and then remove the DNS servers from there.
+To obtain the second group of hosts, let's take all response receivers and then remove the DNS servers from there.
+To obtain all hosts, let's take the union of these two sets.
+```python
+>>> dst_dns_servers = set([p['IP'].dst for p in pcap if 'UDP' in p and p['UDP'].dport == 53])
+>>> src_dns_servers = set([p['IP'].src for p in pcap if 'UDP' in p and p['UDP'].sport == 53])
+>>> dns_servers = src_dns_servers + dst_dns_servers
+```
+**Number of IPs that send DNS requests: 1472**
+```python
+>>> request_makers = set([p['IP'].src for p in pcap if 'UDP' in p and p['UDP'].dport == 53])
+>>> len(request_makers)
+1472
+```
+**Number of IPs that send DNS requests but are not DNS servers (first-group hosts): 1466**
+```python
+>>> len(request_maker - dns_servers)
+1466
+```
+**Number of IPs that receive DNS responses: 1037**
+```python
+>>> response_receivers = set([p['IP'].dst for p in pcap if 'UDP' in p and p['UDP'].sport == 53])
+>>> len(response_receivers)
+1037
+```
+**Number of IPs that receive DNS responses but are not DNS servers (second-group hosts): 1029**
+```python
+>>> len(response_receivers - dns_servers)
+1029
+```
+**All actual hosts: 2197**
+```python
+>>> len(request_makers | response_receivers)
+2197
+```
+We can notice that most hosts act either as a sender or as a receiver, rarely both.
+**Number of hosts that are both senders and receivers: 312**
+```python
+>>> len(request_makers & response_receivers)
+312
+```
+**Jaccard Similarity between sending and receiving hosts sets: 0.142**
+```python
+>>> print(f'{len(request_maker & response_receivers) / len(request_maker | response_receivers):.3f}')
+0.142
+```
+
+fare numero medio di query per host
+
+
+
+
+
+
+
+
 

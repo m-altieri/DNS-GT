@@ -1,0 +1,9 @@
+domain_dim: 256
+host_dim: 256
+sequence_length: 10
+domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
+hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
+mask_p: 0.15
+n_heads: 8
+mask_test: false
+omega: 1.0

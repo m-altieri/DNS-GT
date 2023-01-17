@@ -6,8 +6,6 @@ from colorama import Fore, Style
 import os
 from types import SimpleNamespace as NS
 
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 # @TODO Should I calculate the loss only on masked tokens?
 # Yes. https://stackoverflow.com/questions/68043950/how-are-we-making-prediction-for-masked-tokens-alone-in-bert
 # @TODO Stop gradient calculation for non-masked tokens.

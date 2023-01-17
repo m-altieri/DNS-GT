@@ -5,6 +5,11 @@ _This README is a draft and placeholder._
 
 GNN-NIDS is a project for network intrusion detection based on DNS logs using graph neural networks.
 
+---
+
+![Python 3.9](https://img.shields.io/badge/python-3.9-green)
+![TensorFlow 2.10](https://img.shields.io/badge/tensorflow-2.10-green)
+
 ## Installation
 
 ### Clone the repository:

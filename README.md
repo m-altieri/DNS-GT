@@ -51,16 +51,18 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 - [x] PCAP preprocessing and query information extraction into csv
 - [x] Vocabulary and query dataset creation from csv
 - [x] Design and implement core model components
+- [x] Configure the model with external conf files
 - [x] Training script with tf.data API
+- [x] Add `<START>` and `<PAD>` tokens 
 - [x] Demo for model playesting and debugging 
-- [ ] Dynamic vocabulary and embedding extension
+- [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
+- [ ] Only connect token embeddings with the same host
+- [ ] Calculate gradients only for the masked tokens
+- [ ] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
 - [ ] Improve propagation towards `<START>` and `<MASK>` tokens
 - [ ] Add an add & norm as well as a skip-connection to the MH-GAT block
 - [ ] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
-- [ ] Calculate gradients only for the masked tokens
-- [ ] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
-- [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
-- [ ] Only connect token embeddings with the same host
+- [ ] Dynamic vocabulary and embedding extension
 - [ ] Improve the sequencing module with some advanced algorithm
 - [ ] Visualize clusters of domain embeddings
 

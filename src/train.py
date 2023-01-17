@@ -1,7 +1,6 @@
 import sys
 import os
 
-# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
 
 physical_devices = tf.config.list_physical_devices("GPU")
@@ -22,13 +21,6 @@ from tqdm.keras import TqdmCallback
 from tensorflow.keras.callbacks import ModelCheckpoint
 import logging
 from colorama import Fore, Style
-
-
-# def load_nodes():
-#     hosts = np.load('arrays/hosts.npy', allow_pickle=True)
-#     domains = np.load('arrays/domains.npy', allow_pickle=True)
-
-#     return hosts, domains
 
 
 def get_logger(verbose=False):
@@ -89,7 +81,7 @@ def parse_args():
         "--lr", action="store", default=1e-4, type=float, help="Learning rate"
     )
     argparser.add_argument(
-        "--debug",
+        "--demo",
         action="store_true",
         help="Used for debugging purposes",
     )
@@ -114,7 +106,7 @@ def parse_args():
         help="Whether to include <START> as the first token of each sequence (total length is unaffected)",
     )
     argparser.add_argument(
-        "--version", action="store", choices=["small", "large"], default="small"
+        "--version", action="store", choices=["small", "all"], default="small"
     )
 
     args = argparser.parse_args()
@@ -191,22 +183,6 @@ def find_last_checkpoint(dir="checkpoints"):
         )
     ]
     return checkpoint
-
-
-"""
-def backup_create_sequences(input_file, seqlen, stride=1, include_start=False):
-    # input [queries, 2]
-    # output [queries - stride, seqlen, 2]
-    queries = np.load(input_file)
-    
-    seqs = np.empty(shape=((len(queries) - seqlen + 1) // stride, seqlen, 2),
-                    dtype=object)
-
-    for i in range(len(seqs)):
-        seqs[i] = queries[i*stride : i*stride+seqlen]
-        
-    return seqs
-"""
 
 
 def indent(depth=1):
@@ -293,7 +269,13 @@ def main():
         or (f'checkpoints/model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5')
     )
 
-    if args.debug:
+    if args.demo:
+        logger.info(
+            f"{Style.BRIGHT}\nDomain Embeddings Language Model v0.1{Style.RESET_ALL}\n"
+            + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
+            + "Syntax: <Host> <Domain> (was <Unmasked Domain>) -> <Guessed Domain> (softmax score%)\n"
+        )
+
         with open(domains_vocab_path, "r") as f:
             domains_vocab = [l.strip() for l in f.readlines()]
 
@@ -304,9 +286,33 @@ def main():
         seq = seq.unbatch().take(1).as_numpy_iterator()
         seq = np.array([s for s in seq], dtype=object)
 
+        # uncomment this assignment to manually create a sequence
+        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern in the training data
+        # seq = np.array(
+        #     [
+        #         [
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #             ["172.31.1.6", "graph.facebook.com"],
+        #         ]
+        #     ],
+        #     dtype=object,
+        # )
+
         mask = np.zeros_like(seq)
         # place 1's where you want to replace tokens with <MASK>
         # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
+        # example: mask[0, 1, 1]
+        #   always zero ^  ^  ^
+        #      first token |  |
+        #                     | domain
         mask[0, 1, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
@@ -335,19 +341,7 @@ def main():
             ModelCheckpoint(checkpoint_path, monitor="loss", save_weights_only=True)
         ],
     )
-    """
-    if args.tf_data_api:
-        #for x in train.take(1):
-        #    model.test_step(x)
-        #    start_time = time.perf_counter()
-        #    model.test_step(x)
-        #print(f'{time.perf_counter() - start_time} seconds.')
-        model.fit(x=train, validation_data=test, validation_freq=1, batch_size=args.bs, epochs=args.epochs, callbacks=[ModelCheckpoint(chk_path, monitor='loss', save_weights_only=True)])
-    else:
-        model.fit(x=train, y=train, validation_data=(test, test), validation_freq=1, batch_size=args.bs, epochs=args.epochs, callbacks=[
-                          #TqdmCallback(data_size=len(train), batch_size=args.bs, verbose=2),
-                          ModelCheckpoint(chk_path, monitor='loss', save_weights_only=True)])
-    """
+
     logger.debug(f"Model training completed.")
 
     model.save_weights(checkpoint_path)

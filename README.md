@@ -53,7 +53,8 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 - [x] Design and implement core model components
 - [x] Configure the model with external conf files
 - [x] Training script with tf.data API
-- [x] Add `<START>` and `<PAD>` tokens 
+- [x] Add `<START>` token
+    - [ ] Show sequence contextualized representation examples 
 - [x] Demo for model playesting and debugging 
 - [x] Calculate gradients only for the masked tokens
     - [x] Zero-ed out loss for non-masked tokens
@@ -69,6 +70,7 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 - [ ] (Possibly.) Only connect token embeddings with the same host
 - [ ] Dynamic vocabulary and embedding extension
 - [ ] Improve the sequencing module with custom algorithm
+    - [ ] Add `<PAD>` token
 
 ## Support
 If you need any direct help, contact me: massimiliano.altieri@ec.europa.eu.

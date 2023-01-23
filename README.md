@@ -46,6 +46,7 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 ## Visuals
 
 ## Roadmap
+*Current Paper:*
 - [x] General dataset analysis and overview
 - [x] PCAP preprocessing and query information extraction into csv
 - [x] Vocabulary and query dataset creation from csv
@@ -63,7 +64,7 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 - [ ] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
 - [ ] (Possibly.) Visualize clusters of domain embeddings
 
-For future work:
+*Future Extensions:*
 - [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
 - [ ] (Possibly.) Only connect token embeddings with the same host
 - [ ] Dynamic vocabulary and embedding extension

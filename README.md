@@ -62,6 +62,7 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 - [ ] Add an add & norm as well as a skip-connection to the MH-GAT block
 - [ ] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
 - [ ] (Possibly.) Visualize clusters of domain embeddings
+
 For future work:
 - [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
 - [ ] (Possibly.) Only connect token embeddings with the same host

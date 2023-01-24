@@ -1,9 +1,8 @@
-
 _This README is a draft and placeholder._
 
 # GNN-NIDS (CDP No. 35452 -- Bari)
 
-GNN-NIDS is a project for network intrusion detection based on DNS logs using graph neural networks.
+GNN-NIDS is a project for malicious domain detection based on DNS queries using graph neural networks.
 
 ---
 
@@ -47,24 +46,31 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 ## Visuals
 
 ## Roadmap
+*Current Paper:*
 - [x] General dataset analysis and overview
 - [x] PCAP preprocessing and query information extraction into csv
 - [x] Vocabulary and query dataset creation from csv
 - [x] Design and implement core model components
 - [x] Configure the model with external conf files
 - [x] Training script with tf.data API
-- [x] Add `<START>` and `<PAD>` tokens 
+- [x] Add `<START>` token
+    - [ ] Show sequence contextualized representation examples 
 - [x] Demo for model playesting and debugging 
-- [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
-- [ ] Only connect token embeddings with the same host
-- [ ] Calculate gradients only for the masked tokens
-- [ ] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
+- [x] Calculate gradients only for the masked tokens
+    - [x] Zero-ed out loss for non-masked tokens
+    - [ ] Check that gradients are correctly calculated
+- [x] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
 - [ ] Improve propagation towards `<START>` and `<MASK>` tokens
 - [ ] Add an add & norm as well as a skip-connection to the MH-GAT block
 - [ ] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
+- [ ] (Possibly.) Visualize clusters of domain embeddings
+
+*Future Extensions:*
+- [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
+- [ ] (Possibly.) Only connect token embeddings with the same host
 - [ ] Dynamic vocabulary and embedding extension
-- [ ] Improve the sequencing module with some advanced algorithm
-- [ ] Visualize clusters of domain embeddings
+- [ ] Improve the sequencing module with custom algorithm
+    - [ ] Add `<PAD>` token
 
 ## Support
 If you need any direct help, contact me: massimiliano.altieri@ec.europa.eu.

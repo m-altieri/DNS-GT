@@ -32,16 +32,14 @@ def get_logger(verbose=False):
     return logger
 
 
-def build_model(model, lr=1e-4, H=None, D=None):
-    if model == "nsr":
-        model = NSRModel(H, D)
-    elif model == "delm":
-        model = DELM()
+def build_model(model, args):
+    if model == "delm":
+        model = DELM(tensorboard=args.tensorboard)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-        metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=True)],
-        run_eagerly=False,
+        optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        metrics=[tf.keras.metrics.SparseCategoricalCrossentropy()],
+        run_eagerly=args.eager,
     )
 
     return model
@@ -108,6 +106,9 @@ def parse_args():
     argparser.add_argument(
         "--version", action="store", choices=["small", "all"], default="small"
     )
+    argparser.add_argument("--tensorboard", action="store_true")
+
+    argparser.add_argument("--eager", action="store_true")
 
     args = argparser.parse_args()
     return args
@@ -223,8 +224,8 @@ def main():
             output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
         )
 
-        train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
-        test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
+        train = train.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
+        test = test.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
         # --->
 
     else:
@@ -240,7 +241,7 @@ def main():
         )
         # --->
 
-    model = build_model("delm", lr=args.lr)
+    model = build_model("delm", args)
 
     checkpoint_path = None
     if args.load:
@@ -317,14 +318,15 @@ def main():
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
-        pred = model(masked_seq)
-        pred = tf.nn.softmax(pred)
+        pred, _ = model(masked_seq)
         pred = pred[0]
 
         for i in range(len(pred)):
             logger.info(
                 f"{masked_seq[0,i,0]} {masked_seq[0,i,1]} {f'{Style.DIM}(was {seq[0,i,1]}) {Style.RESET_ALL}' if mask[0,i,1] else ''}-> {domains_vocab[np.array(pred).argmax(axis=-1)[i]]} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%)"
             )
+
+        logger.info(model.summary())
 
         sys.exit(0)
 

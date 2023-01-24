@@ -97,7 +97,7 @@ class DELM(tf.keras.Model):
                 + "\nTrying to default to argument configuration.{Style.RESET_ALL}"
             )
             default_conf = {}
-        self.conf = default_conf | conf
+        self.conf = dict(default_conf, conf)
 
         # Tokens Lookup
         self.domains_lookup = tf.keras.layers.StringLookup(
@@ -300,6 +300,9 @@ class MHGAT_Block(tf.keras.layers.Layer):
         ]
         self.Wo = tf.keras.layers.Dense(self.emb_dim, name=f"MHGAT{block_id}-Wo")
 
+        # Batch Normalization
+        self.bn1 = tf.keras.layers.BatchNormalization()
+
         # Feed Forward NN
         self.linear1 = tf.keras.layers.Dense(self.emb_dim)
         self.nonlinear = tf.keras.layers.Dense(
@@ -308,7 +311,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         self.linear2 = tf.keras.layers.Dense(self.emb_dim)
 
         # Batch Normalization
-        self.bn = tf.keras.layers.BatchNormalization()
+        self.bn2 = tf.keras.layers.BatchNormalization()
 
     @tf.function
     def log_score_heatmaps(self, scores, step):
@@ -363,7 +366,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Add & Norm
         result = tf.math.add(result, inputs)
-        result = self.bn(result)
+        result = self.bn1(result)
 
         # Feed Forward NN
         proj = self.linear1(result)
@@ -372,7 +375,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Add & Norm
         result = tf.math.add(result, proj)
-        result = self.bn(result)
+        result = self.bn2(result)
 
         return result
 

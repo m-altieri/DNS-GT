@@ -5,7 +5,7 @@ outputs/
 src/__pycache__/
 src/checkpoints/
 src/models/__pycache__/
-src/preprocessing/arrays/all/
+src/preprocessing/arrays/
 src/preprocessing/preprocessed/
 src/scripts/
 src/tensorboard/

@@ -1,16 +1,6 @@
 import sys
 import os
-
 import tensorflow as tf
-
-physical_devices = tf.config.list_physical_devices("GPU")
-try:
-    for device in physical_devices:
-        tf.config.experimental.set_memory_growth(device, True)
-except:
-    print("Cannot enable memory growth on first physical device.")
-    sys.exit(1)
-
 import numpy as np
 import argparse
 import random
@@ -22,6 +12,17 @@ from tqdm.keras import TqdmCallback
 from tensorflow.keras.callbacks import ModelCheckpoint
 import logging
 from colorama import Fore, Style
+
+
+def config_tf(args):
+    if args.gpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    physical_devices = tf.config.list_physical_devices("GPU")
+    try:
+        tf.config.experimental.set_memory_growth(physical_devices[0], True)
+    except:
+        print("Cannot enable memory growth on first physical device.")
+        sys.exit(1)
 
 
 def get_logger(verbose=False):
@@ -107,6 +108,12 @@ def parse_args():
     argparser.add_argument(
         "--version", action="store", choices=["small", "all"], default="small"
     )
+    argparser.add_argument(
+        "--gpu",
+        action="store",
+        help="Set if you are running on a multi-gpu machine (es. --gpu 3)",
+    )
+
     argparser.add_argument("--tensorboard", action="store_true")
 
     argparser.add_argument("--eager", action="store_true")
@@ -202,6 +209,8 @@ def main():
     queries_path = f"preprocessing/arrays/{args.version}/queries/"
     domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
+
+    config_tf(args)
 
     if args.tf_data_api:
         # tf.data API approach <---

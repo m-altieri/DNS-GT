@@ -97,7 +97,7 @@ class DELM(tf.keras.Model):
                 + "\nTrying to default to argument configuration.{Style.RESET_ALL}"
             )
             default_conf = {}
-        self.conf = dict(default_conf, conf)
+        self.conf = dict(default_conf, **conf)
 
         # Tokens Lookup
         self.domains_lookup = tf.keras.layers.StringLookup(

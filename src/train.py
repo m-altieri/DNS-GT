@@ -36,7 +36,12 @@ def get_logger(verbose=False):
 
 def build_model(model, args):
     if model == "delm":
-        model = DELM(tensorboard=args.tensorboard)
+        model = DELM(
+            seqlen=args.seqlen,
+            blocks=args.blocks,
+            tensorboard=args.tensorboard,
+            quick_tb=args.quick_tb,
+        )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(),
@@ -86,12 +91,7 @@ def parse_args():
         help="Used for debugging purposes",
     )
     argparser.add_argument(
-        "--tf-data-api",
-        action="store_true",
-        help="Use the TF Data API as data pipeline",
-    )
-    argparser.add_argument(
-        "--seqlen", action="store", default=10, type=int, help="Maximum sequence length"
+        "--seqlen", action="store", default=16, type=int, help="Maximum sequence length"
     )
     argparser.add_argument(
         "--stride",
@@ -113,10 +113,17 @@ def parse_args():
         action="store",
         help="Set if you are running on a multi-gpu machine (es. --gpu 3)",
     )
-
     argparser.add_argument("--tensorboard", action="store_true")
-
+    argparser.add_argument(
+        "--quick-tb",
+        action="store_true",
+        help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
+    )
     argparser.add_argument("--eager", action="store_true")
+    argparser.add_argument("--blocks", action="store", type=int)
+    # argparser.add_argument("--blocks", type=int)
+    # argparser.add_argument("--blocks", type=int)
+    # argparser.add_argument("--blocks", type=int)
 
     args = argparser.parse_args()
     return args
@@ -212,44 +219,28 @@ def main():
 
     config_tf(args)
 
-    if args.tf_data_api:
-        # tf.data API approach <---
-        train = tf.data.Dataset.from_generator(
-            lambda: seq_generator_from_folder(
-                os.path.join(queries_path, "train"),
-                stride=args.stride,
-                seqlen=args.seqlen,
-                include_start=args.include_start,
-            ),
-            output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
-        )
+    train = tf.data.Dataset.from_generator(
+        lambda: seq_generator_from_folder(
+            os.path.join(queries_path, "train"),
+            stride=args.stride,
+            seqlen=args.seqlen,
+            include_start=args.include_start,
+        ),
+        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
+    )
 
-        test = tf.data.Dataset.from_generator(
-            lambda: seq_generator_from_folder(
-                os.path.join(queries_path, "test"),
-                stride=args.stride,
-                seqlen=args.seqlen,
-                include_start=args.include_start,
-            ),
-            output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
-        )
+    test = tf.data.Dataset.from_generator(
+        lambda: seq_generator_from_folder(
+            os.path.join(queries_path, "test"),
+            stride=args.stride,
+            seqlen=args.seqlen,
+            include_start=args.include_start,
+        ),
+        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
+    )
 
-        train = train.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
-        test = test.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
-        # --->
-
-    else:
-        # Old approach <---
-        TRAIN_SPLIT = 0.8
-        seqs = create_sequences(
-            os.path.join(queries_path, "queries-20160509_011632.pcap.csv.npy"),
-            args.seqlen,
-        )
-        train, test = (
-            seqs[: round(len(seqs) * TRAIN_SPLIT)],
-            seqs[round(len(seqs) * TRAIN_SPLIT) :],
-        )
-        # --->
+    train = train.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
+    test = test.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
     model = build_model("delm", args)
 
@@ -344,8 +335,8 @@ def main():
 
     model.fit(
         x=train,
-        y=None if args.tf_data_api else train,
-        validation_data=test if args.tf_data_api else (test, test),
+        y=None,
+        validation_data=test,
         validation_freq=1,
         batch_size=args.bs,
         epochs=args.epochs,
@@ -359,7 +350,7 @@ def main():
     model.save_weights(checkpoint_path)
 
     logger.debug("Starting model evaluation...")
-    model.evaluate(x=test, y=None if args.tf_data_api else test, batch_size=args.bs)
+    model.evaluate(x=test, y=None, batch_size=args.bs)
     logger.debug("Model evaluation completed.")
 
 

@@ -1,6 +1,5 @@
 domain_dim: 512
 host_dim: 512
-sequence_length: 64
 domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
 mask_p:
@@ -8,6 +7,7 @@ mask_p:
     same: 0.015
     random: 0.015
 n_heads: 8
-mask_test: false
+mask_val: true
 omega: 1.0
 blocks: 2
+quick_tb: false

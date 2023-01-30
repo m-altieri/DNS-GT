@@ -60,18 +60,21 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
     - [x] Zero-ed out loss for non-masked tokens
     - [ ] Check that gradients are correctly calculated
 - [x] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
-- [ ] Improve propagation towards `<START>` and `<MASK>` tokens
-- [ ] Add an add & norm as well as a skip-connection to the MH-GAT block
-- [ ] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
+- [x] Improve propagation towards `<START>` and `<MASK>` tokens
+    - [x] `<START>` and `<MASK>` are always connected with all tokens
+- [x] Add an add & norm as well as a skip-connection to the MH-GAT block
+- [x] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
+- [ ] (Possibly.) Only connect token embeddings with the same host
 - [ ] (Possibly.) Visualize clusters of domain embeddings
 
 *Future Extensions:*
-- [ ] Implement the two domain adjacency matrices (hierarchical and behavioral)
-- [ ] (Possibly.) Only connect token embeddings with the same host
+- [ ] Implement at least two domain adjacency matrices (hierarchical and behavioral)
+    - [x] Implemented hierarchical similarity
+    - [ ] Implement behavioral similarity
 - [ ] Dynamic vocabulary and embedding extension
+    - [ ] Add `<UNK>` token
 - [ ] Improve the sequencing module with custom algorithm
     - [ ] Add `<PAD>` token
 
 ## Support
 If you need any direct help, contact me: massimiliano.altieri@ec.europa.eu.
-

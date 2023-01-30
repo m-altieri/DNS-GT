@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 import yaml
 import sys
 import logging
@@ -6,6 +7,7 @@ from colorama import Fore, Style
 import os
 from types import SimpleNamespace as NS
 import datetime
+import time
 
 
 class DELM(tf.keras.Model):
@@ -32,13 +34,13 @@ class DELM(tf.keras.Model):
         )
 
     @tf.function
-    def log_weight_histograms(self, vars, every):
-        def body():
-            with self.tb_writer.as_default():
-                for v in vars:
-                    tf.summary.histogram(v.name, v, step=self.step)
-
-        tf.cond(tf.math.floormod(self.step, every) == 0, body, lambda: None)
+    def tb_log_weights(self, vars, every):  # @TODO
+        pass
+        # def body():
+        #     with self.tb_writer.as_default():
+        #         for v in vars:
+        #             tf.summary.histogram(v.name, v, step=self.step)
+        # tf.cond(tf.math.floormod(self.step, every) == 0, body, lambda: None)
 
     @tf.function
     def mask(self, sequence, mask_p, same_p, random_p):
@@ -119,7 +121,9 @@ class DELM(tf.keras.Model):
             self.tb_writer = tf.summary.create_file_writer("tensorboard/tmp")
 
         # Token Adjacency
-        self.adj_estimator = AdjacencyEstimator(type="binary", tb_writer=self.tb_writer)
+        # self.adj_estimator = AdjacencyEstimator(
+        #     type="binary", normalize=False, tb_writer=self.tb_writer
+        # )
 
         # Token Indexes Lookup
         self.domains_lookup = tf.keras.layers.StringLookup(
@@ -147,7 +151,7 @@ class DELM(tf.keras.Model):
             input_length=self.conf["seqlen"],
         )
 
-        self.dropout = tf.keras.layers.Dropout(0.1)
+        self.dropout = tf.keras.layers.Dropout(0.15)
 
         # MHGAT Blocks
         self.blocks = [
@@ -155,6 +159,7 @@ class DELM(tf.keras.Model):
                 n_heads=self.conf["n_heads"],
                 emb_dim=self.conf["domain_dim"],
                 block_id=block,
+                tensorboard=self.conf["tensorboard"],
                 tb_writer=self.tb_writer,
             )
             for block in range(self.conf["blocks"])
@@ -173,13 +178,18 @@ class DELM(tf.keras.Model):
 
         # Mask the tokens if required
         mask = None
-        if training or self.conf["mask_val"]:
+        if training or self.conf["mask_test"]:
             mask_p = tf.constant(self.conf["mask_p"]["mask"])
             same_p = tf.constant(self.conf["mask_p"]["same"])
             random_p = tf.constant(self.conf["mask_p"]["random"])
             domains, mask = self.mask(domains, mask_p, same_p, random_p)
 
-        adj_h = self.adj_estimator(domains)
+        # adj_h = self.adj_estimator(
+        #     domains
+        # )  # about 33% time increase compared to using tf.ones(), and most importantly makes the GPU util unstable
+        adj_h = tf.ones(
+            [tf.shape(domains)[0], tf.shape(domains)[1], tf.shape(domains)[1]]
+        )
 
         # Lookup vocab index for each token
         domain_indexes = self.domains_lookup(domains)
@@ -212,13 +222,17 @@ class DELM(tf.keras.Model):
             tf.cast(self.domains_lookup.vocabulary_size(), tf.int32),
         )  # one-hot encoding of the true tokens [B,L,vsize]
 
-        mask = tf.reshape(
-            tf.tile(
-                mask,
-                [1, self.domains_lookup.vocabulary_size()],
+        mask = tf.transpose(
+            tf.reshape(
+                tf.tile(
+                    mask,
+                    [1, self.domains_lookup.vocabulary_size()],
+                ),
+                (-1, tf.shape(true_onehot)[2], tf.shape(true_onehot)[1]),
             ),
-            tf.shape(true_onehot),
+            (0, 2, 1),
         )
+
         return tf.where(mask, pred, true_onehot)
 
     @tf.function
@@ -245,22 +259,6 @@ class DELM(tf.keras.Model):
         # Compute gradients and update weights
         trainable_variables = self.trainable_variables
 
-        # TensorBoard -- Visualize weights
-        # if self.conf["tensorboard"]:
-        #     self.log_weight_histograms(
-        #         (
-        #             trainable_variables[0],
-        #             trainable_variables[1],
-        #             trainable_variables[2],
-        #             trainable_variables[18],
-        #             trainable_variables[34],
-        #             trainable_variables[50],
-        #             trainable_variables[54],
-        #             trainable_variables[56],
-        #         ),
-        #         every=500,
-        #     )
-
         gradients = tape.gradient(loss, trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, trainable_variables))
 
@@ -272,6 +270,14 @@ class DELM(tf.keras.Model):
 
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}
+
+    @tf.function
+    def _predict(self, data):
+        x = data
+
+        pred, mask = self(x, training=False)
+
+        return pred, mask
 
     @tf.function
     def test_step(self, data):
@@ -301,20 +307,38 @@ class DELM(tf.keras.Model):
 
 
 class MHGAT_Block(tf.keras.layers.Layer):
+    # @tf.function
+    # def log_score_heatmaps(self, scores, step):
+    #     b_range = tf.range(tf.size(scores))
+    #     b_range = tf.expand_dims(b_range, axis=1)
+    #     indices = tf.concat(
+    #         [b_range, tf.zeros_like(b_range)], axis=1
+    #     )  # log only the first head for each sequence in the batch @TODO log all of them?
+    #     image = tf.expand_dims(tf.gather_nd(scores, indices), axis=-1)
+    #     with self.tb_writer.as_default():
+    #         tf.summary.image(
+    #             "att_scores",
+    #             image,
+    #             step=step,
+    #         )
+
     @tf.function
-    def log_score_heatmaps(self, scores, step):
-        b_range = tf.range(tf.size(scores))
-        b_range = tf.expand_dims(b_range, axis=1)
-        indices = tf.concat(
-            [b_range, tf.zeros_like(b_range)], axis=1
-        )  # log only the first head for each sequence in the batch @TODO log all of them?
-        image = tf.expand_dims(tf.gather_nd(scores, indices), axis=-1)
-        with self.tb_writer.as_default():
-            tf.summary.image(
-                "att_scores",
-                image,
-                step=step,
+    def tb_log_image(self, name, tensor, step, minmax=False):
+        if self.tensorboard:
+            tensor = tf.cond(
+                tf.math.equal(tf.rank(tensor), tf.constant(3)),
+                lambda: tf.expand_dims(tensor, -1),
+                lambda: tensor,
             )
+            tensor = tf.cond(
+                tf.constant(minmax), lambda: self.minmax_norm(tensor), lambda: tensor
+            )
+            with self.tb_writer.as_default():
+                tf.summary.image(
+                    name=name,
+                    data=tensor,
+                    step=step,
+                )
 
     def __init__(self, n_heads, emb_dim, **kwargs):
         super(MHGAT_Block, self).__init__()
@@ -350,6 +374,9 @@ class MHGAT_Block(tf.keras.layers.Layer):
         ]
         self.Wo = tf.keras.layers.Dense(self.emb_dim, name=f"MHGAT{self.block_id}-Wo")
 
+        # Softmax
+        self.softmax = tf.keras.layers.Softmax()
+
         # Batch Normalization
         self.bn1 = tf.keras.layers.BatchNormalization()
 
@@ -362,6 +389,13 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Batch Normalization
         self.bn2 = tf.keras.layers.BatchNormalization()
+
+    @tf.function
+    def minmax_norm(self, tensor):
+        return tf.divide(
+            tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
+            tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
+        )
 
     @tf.function
     def call(self, inputs, adj_h, **kwargs):
@@ -384,22 +418,26 @@ class MHGAT_Block(tf.keras.layers.Layer):
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
         )  # [B, n_heads, L, L] (normalization)
 
+        self.tb_log_image(f"MHGAT{self.block_id}/7", scores[:, 7], step=0, minmax=True)
+
         # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
-        # with self.tb_writer.as_default():
-        #     tf.summary.image(
-        #         f"MHGAT{self.block_id}", tf.expand_dims(adj_h, axis=-1), step=0
-        #     )
         adj_h = tf.expand_dims(adj_h, axis=1)
         adj_h = tf.tile(adj_h, [1, 1, tf.shape(scores)[1], 1])
         adj_h = tf.reshape(adj_h, tf.shape(scores))
-        scores = tf.math.multiply(scores, adj_h)
+        self.tb_log_image(
+            f"MHGAT{self.block_id}/adj_h", adj_h[:, 7], step=0, minmax=True
+        )
+        # --->
 
-        scores = tf.nn.softmax(scores)  # [B, n_heads, L, L] attention weights
+        # Calculate softmax masking disconnected scores
+        scores = self.softmax(
+            scores, mask=adj_h
+        )  # [B, n_heads, L, L] attention weights
+        self.tb_log_image(
+            f"MHGAT{self.block_id}/7-after-softmax", scores[:, 7], step=0, minmax=True
+        )
 
-        # Log attention heatmaps
-        # if self.tensorboard:
-        #     self.log_score_heatmaps(scores, kwargs.get("step", None))
-
+        # Calculate weighted values
         result = tf.linalg.matmul(scores, V)  # [B, n_heads, L, head_dim]
         result = tf.concat(
             tf.unstack(result, axis=1), axis=-1
@@ -477,11 +515,11 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
         return tensor
 
     @tf.function
-    def hierarchical_similarity(self, domains):
+    def hierarchical_similarity(self, domains, **kwargs):
         """
         domains: Tensor of shape (Batch size, Seqlen)
         Returns a Tensor of shape (Batch size, Seqlen, Seqlen),
-        where result[_,di,dj] equals the hierarchical similarity
+        where result[_,di,dj] is the hierarchical similarity
         between domains di and dj.
         """
         splitted = tf.strings.split(domains, sep=".")  # [B,L,?] (RaggedTensor)
@@ -599,6 +637,7 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
 
         # TensorBoard
         self.tb_writer = kwargs.get("tb_writer", None)
+        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
         # Adjacency Conf
         self.type = type
@@ -608,7 +647,7 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
     @tf.function
     def call(self, inputs):
         # inputs [B,L]
-        hierarchical_similarity = self.hierarchical_similarity(inputs)
+        hierarchical_similarity = self.hierarchical_similarity(inputs, step=self.step)
 
         adj_h = self.construct_adjacency(
             hierarchical_similarity, self.type, self.threshold
@@ -623,74 +662,6 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
         #     with self.tb_writer.as_default():
         #         tf.summary.image("adj", tf.expand_dims(adj_h, axis=-1), step=0)
 
-        # Debug all adj types
-        # if self.tb_writer:
-        #     with self.tb_writer.as_default():
-        #         tf.summary.image(
-        #             "debug/adj_binary",
-        #             tf.expand_dims(
-        #                 self.construct_adjacency(
-        #                     hierarchical_similarity, "binary", self.threshold
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
-        #         tf.summary.image(
-        #             "debug/adj_cutoff",
-        #             tf.expand_dims(
-        #                 self.construct_adjacency(
-        #                     hierarchical_similarity, "cutoff", self.threshold
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
-        #         tf.summary.image(
-        #             "debug/adj_weighted",
-        #             tf.expand_dims(
-        #                 self.construct_adjacency(
-        #                     hierarchical_similarity, "weighted", self.threshold
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
-        #         tf.summary.image(
-        #             "debug/adj_norm_binary",
-        #             tf.expand_dims(
-        #                 self._normalize(
-        #                     self.construct_adjacency(
-        #                         hierarchical_similarity, "binary", self.threshold
-        #                     ),
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
-        #         tf.summary.image(
-        #             "debug/adj_norm_cutoff",
-        #             tf.expand_dims(
-        #                 self._normalize(
-        #                     self.construct_adjacency(
-        #                         hierarchical_similarity, "cutoff", self.threshold
-        #                     ),
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
-        #         tf.summary.image(
-        #             "debug/adj_norm_weighted",
-        #             tf.expand_dims(
-        #                 self._normalize(
-        #                     self.construct_adjacency(
-        #                         hierarchical_similarity, "weighted", self.threshold
-        #                     ),
-        #                 ),
-        #                 axis=-1,
-        #             ),
-        #             step=0,
-        #         )
+        self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         return adj_h

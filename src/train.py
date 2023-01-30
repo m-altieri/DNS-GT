@@ -39,13 +39,14 @@ def build_model(model, args):
         model = DELM(
             seqlen=args.seqlen,
             blocks=args.blocks,
+            mask_test=args.mask_test,
             tensorboard=args.tensorboard,
             quick_tb=args.quick_tb,
         )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-        metrics=[tf.keras.metrics.SparseCategoricalCrossentropy()],
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+        metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
         run_eagerly=args.eager,
     )
 
@@ -83,12 +84,18 @@ def parse_args():
         "--bs", action="store", default=128, type=int, help="Batch size"
     )
     argparser.add_argument(
-        "--lr", action="store", default=1e-4, type=float, help="Learning rate"
+        "--lr", action="store", default=1e-5, type=float, help="Learning rate"
     )
     argparser.add_argument(
         "--demo",
         action="store_true",
         help="Used for debugging purposes",
+    )
+    argparser.add_argument(
+        "--test-seq",
+        action="store",
+        type=int,
+        help="Used for debugging purposes; choose the test sequence index",
     )
     argparser.add_argument(
         "--seqlen", action="store", default=16, type=int, help="Maximum sequence length"
@@ -121,11 +128,15 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
-    # argparser.add_argument("--blocks", type=int)
-    # argparser.add_argument("--blocks", type=int)
-    # argparser.add_argument("--blocks", type=int)
 
     args = argparser.parse_args()
+
+    assert args.test_seq is None or args.test_seq > 0
+
+    args.mask_test = not args.demo
+    if args.demo:
+        args.eager = True
+        args.tensorboard = True
     return args
 
 
@@ -239,8 +250,8 @@ def main():
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
 
-    train = train.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
-    test = test.shuffle(1000).batch(args.bs).prefetch(tf.data.AUTOTUNE)
+    train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
+    test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
     model = build_model("delm", args)
 
@@ -281,11 +292,14 @@ def main():
         with open(domains_vocab_path, "r") as f:
             domains_vocab = [l.strip() for l in f.readlines()]
 
-        seq = test
-        seq = seq.skip(
-            np.random.randint(0, 30)
-        )  # remove seq.skip() to always use the same test sequence, or you can manually set a sequence index
-        seq = seq.unbatch().take(1).as_numpy_iterator()
+        # seq = test
+
+        seq = (
+            train.skip(args.test_seq or np.random.randint(0, 30))
+            .unbatch()
+            .take(1)
+            .as_numpy_iterator()
+        )
         seq = np.array([s for s in seq], dtype=object)
 
         # uncomment this assignment to manually create a sequence
@@ -315,19 +329,26 @@ def main():
         #   always zero ^  ^  ^
         #      first token |  |
         #                     | domain
-        mask[0, 1, 1] = 1
+        mask[0, 5, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
-        pred, _ = model(masked_seq)
+        pred, _ = model._predict(masked_seq)
         pred = pred[0]
 
         for i in range(len(pred)):
+            host = masked_seq[0, i, 0]
+            if type(host) is bytes:
+                host = host.decode("utf-8")
+            true_token = masked_seq[0, i, 1]
+            if type(true_token) is bytes:
+                true_token = true_token.decode("utf-8")
+            predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
             logger.info(
-                f"{masked_seq[0,i,0]} {masked_seq[0,i,1]} {f'{Style.DIM}(was {seq[0,i,1]}) {Style.RESET_ALL}' if mask[0,i,1] else ''}-> {domains_vocab[np.array(pred).argmax(axis=-1)[i]]} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%)"
+                f"{host} {true_token} {f'{Style.DIM}(was {seq[0,i,1]}) {Style.RESET_ALL}' if mask[0,i,1] else ''}-> {f'{Fore.GREEN}' if true_token == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL}"
             )
 
-        logger.info(model.summary())
+        # logger.info(model.summary())
 
         sys.exit(0)
 

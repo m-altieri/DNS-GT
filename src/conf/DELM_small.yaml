@@ -4,10 +4,10 @@ domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
 mask_p:
     mask: 0.12
-    same: 0.015
-    random: 0.015
+    same: 0.010
+    random: 0.010
 n_heads: 8
-mask_val: true
+mask_test: true
 omega: 1.0
 blocks: 2
 quick_tb: false

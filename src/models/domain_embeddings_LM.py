@@ -112,14 +112,16 @@ class DELM(tf.keras.Model):
                 self.conf[key] = conf[key]
 
         # TensorBoard Init
+        TB_PATH = "tensorboard"
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        os.makedirs("tensorboard")
+        if not os.path.exists(TB_PATH):
+            os.makedirs(TB_PATH)
         if not self.conf["quick_tb"]:
             self.tb_writer = tf.summary.create_file_writer(
-                f'tensorboard/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'
+                os.path.join(TB_PATH, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
             )
         else:
-            self.tb_writer = tf.summary.create_file_writer("tensorboard/tmp")
+            self.tb_writer = tf.summary.create_file_writer(os.path.join(TB_PATH, "tmp"))
 
         # Token Adjacency
         # self.adj_estimator = AdjacencyEstimator(

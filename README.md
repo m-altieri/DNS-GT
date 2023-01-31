@@ -45,7 +45,9 @@ _TODO: now that `.pcap` file is included in `src/` for convenience but I have to
 
 ### Docker
 ```
-docker run -it --gpus all -p 6006:6006 delm "python3 train.py --gpu 0 --quick-tb & { sleep 30; tensorboard --host=0.0.0.0 --logdir=tmp; };"```
+docker run -it --gpus all -p 6006:6006 delm "python3 train.py --gpu 0 --quick-tb & { sleep 30; tensorboard --host=0.0.0.0 --logdir=tmp; };"
+```
+
 ## Visuals
 
 ## Roadmap

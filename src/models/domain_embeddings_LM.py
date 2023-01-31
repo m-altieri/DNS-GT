@@ -113,6 +113,7 @@ class DELM(tf.keras.Model):
 
         # TensorBoard Init
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
+        os.makedirs("tensorboard")
         if not self.conf["quick_tb"]:
             self.tb_writer = tf.summary.create_file_writer(
                 f'tensorboard/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'

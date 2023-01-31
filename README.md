@@ -43,6 +43,10 @@ python3 preprocess.py -v .
 
 _TODO: now that `.pcap` file is included in `src/` for convenience but I have to remove it._
 
+### Docker
+```
+docker run -it --gpus all delm "python3 train.py --gpu 0 --quick-tb & { sleep 30; tensorboard dev upload --logdir=tmp; };"
+```
 ## Visuals
 
 ## Roadmap

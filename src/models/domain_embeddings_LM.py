@@ -151,7 +151,7 @@ class DELM(tf.keras.Model):
             input_length=self.conf["seqlen"],
         )
 
-        self.dropout = tf.keras.layers.Dropout(0.15)
+        self.dropout = tf.keras.layers.Dropout(0.1)
 
         # MHGAT Blocks
         self.blocks = [
@@ -166,7 +166,7 @@ class DELM(tf.keras.Model):
         ]
 
         # Classification Layers
-        self.classifier = Classifier([512], self.ndomains)
+        self.classifier = Classifier([], self.ndomains)
 
     @tf.function
     def call(self, inputs, training=None):
@@ -340,6 +340,13 @@ class MHGAT_Block(tf.keras.layers.Layer):
                     step=step,
                 )
 
+    @tf.function
+    def minmax_norm(self, tensor):
+        return tf.divide(
+            tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
+            tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
+        )
+
     def __init__(self, n_heads, emb_dim, **kwargs):
         super(MHGAT_Block, self).__init__()
 
@@ -381,7 +388,9 @@ class MHGAT_Block(tf.keras.layers.Layer):
         self.bn1 = tf.keras.layers.BatchNormalization()
 
         # Feed Forward NN
-        self.linear1 = tf.keras.layers.Dense(self.emb_dim)
+        self.linear1 = tf.keras.layers.Dense(
+            self.emb_dim
+        )  # dall'eq. (2) di Vaswani sembra che questo linear1 non ci sia
         self.nonlinear = tf.keras.layers.Dense(
             self.emb_dim * self.nonlinear_stretch, activation="relu"
         )
@@ -390,12 +399,8 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # Batch Normalization
         self.bn2 = tf.keras.layers.BatchNormalization()
 
-    @tf.function
-    def minmax_norm(self, tensor):
-        return tf.divide(
-            tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
-            tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
-        )
+        # Residual Dropout
+        self.dropout = tf.keras.layers.Dropout(0.1)
 
     @tf.function
     def call(self, inputs, adj_h, **kwargs):
@@ -418,21 +423,25 @@ class MHGAT_Block(tf.keras.layers.Layer):
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
         )  # [B, n_heads, L, L] (normalization)
 
+        # tf.print(scores[:, 7])
+        # tf.print(tf.math.reduce_max(scores[:, 7]))
+        # tf.print(tf.math.reduce_min(scores[:, 7]))
         self.tb_log_image(f"MHGAT{self.block_id}/7", scores[:, 7], step=0, minmax=True)
 
         # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
         adj_h = tf.expand_dims(adj_h, axis=1)
         adj_h = tf.tile(adj_h, [1, 1, tf.shape(scores)[1], 1])
         adj_h = tf.reshape(adj_h, tf.shape(scores))
-        self.tb_log_image(
-            f"MHGAT{self.block_id}/adj_h", adj_h[:, 7], step=0, minmax=True
-        )
+        self.tb_log_image(f"MHGAT{self.block_id}/adj_h", adj_h[:, 7], step=0)
         # --->
 
         # Calculate softmax masking disconnected scores
         scores = self.softmax(
             scores, mask=adj_h
         )  # [B, n_heads, L, L] attention weights
+        # tf.print(scores[:, 7], summarize=-1)
+        # tf.print(tf.math.reduce_max(scores[:, 7]))
+        # tf.print(tf.math.reduce_min(scores[:, 7]))
         self.tb_log_image(
             f"MHGAT{self.block_id}/7-after-softmax", scores[:, 7], step=0, minmax=True
         )
@@ -444,6 +453,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         )  # [B, L, n_heads*head_dim]
 
         result = self.Wo(result)  # [B, L, emb_dim]
+        result = self.dropout(result)  # Residual Dropout
 
         # Add & Norm
         result = tf.math.add(result, inputs)
@@ -453,6 +463,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         proj = self.linear1(result)
         proj = self.nonlinear(proj)
         proj = self.linear2(proj)
+        proj = self.dropout(proj)  # Residual Dropout
 
         # Add & Norm
         result = tf.math.add(result, proj)

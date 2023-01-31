@@ -329,7 +329,7 @@ def main():
         #   always zero ^  ^  ^
         #      first token |  |
         #                     | domain
-        mask[0, 5, 1] = 1
+        mask[0, 7, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 

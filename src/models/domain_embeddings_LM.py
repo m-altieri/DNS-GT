@@ -43,49 +43,73 @@ class DELM(tf.keras.Model):
         # tf.cond(tf.math.floormod(self.step, every) == 0, body, lambda: None)
 
     @tf.function
-    def mask(self, sequence, mask_p, same_p, random_p):
+    def mask(self, hosts, domains, mask_p, same_p, random_p):
+        tf.debugging.assert_equal(tf.shape(hosts), tf.shape(domains))
         # Randomly decide the tokens to mask for the current batch
         rnd = tf.random.uniform(
-            shape=tf.shape(sequence), maxval=1.0, dtype=tf.float32
+            shape=tf.shape(domains), maxval=1.0, dtype=tf.float32
         )  # [B,L]
 
         rnd = tf.where(
-            tf.math.equal(sequence, "<START>"), tf.ones_like(rnd), rnd
+            tf.math.equal(domains, "<START>"), tf.ones_like(rnd), rnd
         )  # <START> is never masked
 
         # Create masks of <MASK>, unchanged and random tokens
-        all_mask_tokens = tf.fill(dims=tf.shape(sequence), value="<MASK>")  # [B,L]
-        all_same_tokens = tf.identity(sequence)  # [B,L]
-        all_random_tokens = tf.random.uniform(
-            shape=tf.shape(sequence),
+        all_mask_tokens = tf.fill(dims=tf.shape(domains), value="<MASK>")  # [B,L]
+        all_same_host_tokens = tf.identity(hosts)  # [B,L]
+        all_same_domain_tokens = tf.identity(domains)  # [B,L]
+        all_random_host_tokens = tf.random.uniform(
+            shape=tf.shape(hosts),
+            minval=0,
+            maxval=self.hosts_lookup.vocabulary_size(),
+            dtype=tf.dtypes.int64,
+        )  # [B,L]
+        all_random_host_tokens = self.inverse_hosts_lookup(all_random_host_tokens)
+        all_random_domain_tokens = tf.random.uniform(
+            shape=tf.shape(domains),
             minval=0,
             maxval=self.domains_lookup.vocabulary_size(),
             dtype=tf.dtypes.int64,
         )  # [B,L]
-        all_random_tokens = self.inverse_domains_lookup(all_random_tokens)
+        all_random_domain_tokens = self.inverse_domains_lookup(all_random_domain_tokens)
 
         # Replace the predefined % of tokens with the correct mask
-        masked_sequence = tf.where(
+        masked_hosts = tf.where(
             tf.math.less(rnd, mask_p + same_p + random_p),
             all_mask_tokens,
-            sequence,
+            hosts,
         )  # replace <MASK>s
-        masked_sequence = tf.where(
+        masked_hosts = tf.where(
             tf.math.less(rnd, same_p + random_p),
-            all_same_tokens,
-            masked_sequence,
+            all_same_host_tokens,
+            masked_hosts,
         )  # also replace same
-        masked_sequence = tf.where(
+        masked_hosts = tf.where(
             tf.math.less(rnd, random_p),
-            all_random_tokens,
-            masked_sequence,
+            all_random_host_tokens,
+            masked_hosts,
+        )  # also replace randoms; [B,L]
+        masked_domains = tf.where(
+            tf.math.less(rnd, mask_p + same_p + random_p),
+            all_mask_tokens,
+            domains,
+        )  # replace <MASK>s
+        masked_domains = tf.where(
+            tf.math.less(rnd, same_p + random_p),
+            all_same_domain_tokens,
+            masked_domains,
+        )  # also replace same
+        masked_domains = tf.where(
+            tf.math.less(rnd, random_p),
+            all_random_domain_tokens,
+            masked_domains,
         )  # also replace randoms; [B,L]
 
         # A token is considered *masked* if any type of mask is applied to it
         # (<MASK>, unchanged and random all count as masks)
         mask = tf.math.less(rnd, mask_p + same_p + random_p)  # [B,L]
 
-        return masked_sequence, mask
+        return masked_hosts, masked_domains, mask
 
     def __init__(self, **conf):
         super(DELM, self).__init__()
@@ -118,7 +142,11 @@ class DELM(tf.keras.Model):
             os.makedirs(TB_PATH)
         if not self.conf["quick_tb"]:
             self.tb_writer = tf.summary.create_file_writer(
-                os.path.join(TB_PATH, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+                os.path.join(
+                    TB_PATH,
+                    self.conf.get("run_name", None)
+                    or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+                )
             )
         else:
             self.tb_writer = tf.summary.create_file_writer(os.path.join(TB_PATH, "tmp"))
@@ -138,6 +166,9 @@ class DELM(tf.keras.Model):
         )
         self.hosts_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.conf["hosts_vocab_path"], num_oov_indices=0
+        )
+        self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.conf["hosts_vocab_path"], num_oov_indices=0, invert=True
         )
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
@@ -185,7 +216,7 @@ class DELM(tf.keras.Model):
             mask_p = tf.constant(self.conf["mask_p"]["mask"])
             same_p = tf.constant(self.conf["mask_p"]["same"])
             random_p = tf.constant(self.conf["mask_p"]["random"])
-            domains, mask = self.mask(domains, mask_p, same_p, random_p)
+            hosts, domains, mask = self.mask(hosts, domains, mask_p, same_p, random_p)
 
         # adj_h = self.adj_estimator(
         #     domains
@@ -280,7 +311,14 @@ class DELM(tf.keras.Model):
 
         pred, mask = self(x, training=False)
 
-        return pred, mask
+        domains = self.slice_domains(x)
+        domains = tf.squeeze(domains, axis=-1)
+        domain_indexes = self.domains_lookup(domains)
+        loss = self.compiled_loss(
+            domain_indexes, pred, regularization_losses=self.losses
+        )
+        tf.print(domain_indexes, summarize=-1)
+        return pred, mask, loss
 
     @tf.function
     def test_step(self, data):

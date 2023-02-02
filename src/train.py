@@ -42,6 +42,8 @@ def build_model(model, args):
             mask_test=args.mask_test,
             tensorboard=args.tensorboard,
             quick_tb=args.quick_tb,
+            run_name=args.run_name,
+            omega=args.omega,
         )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -128,6 +130,13 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
+    argparser.add_argument("--group-hosts", action="store_true")
+    argparser.add_argument(
+        "--run-name",
+        action="store",
+        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5',
+    )
+    argparser.add_argument("--omega", action="store", type=float)
 
     args = argparser.parse_args()
 
@@ -173,23 +182,31 @@ def parse_args():
 #     print(out)
 
 
-def seq_generator_from_folder(input_folder, seqlen, stride=1, include_start=False):
+def seq_generator_from_folder(
+    input_folder, seqlen, stride=1, include_start=False, group_hosts=True
+):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
         seqs = create_sequences(
-            os.path.join(input_folder, f), seqlen, stride, include_start
+            os.path.join(input_folder, f), seqlen, stride, include_start, group_hosts
         )
         for seq in seqs:
             yield seq
 
 
-def create_sequences(input_file, seqlen, stride=1, include_start=False):
+def create_sequences(
+    input_file, seqlen, stride=1, include_start=False, group_hosts=True
+):
     # input [queries, 2]
     # output [queries - stride, seqlen, 2]
 
     actual_seqlen = seqlen - include_start
 
     queries = np.load(input_file)
+    if group_hosts:
+        queries = queries[
+            np.argsort(queries[:, 0])
+        ]  # Sort queries by host, preserving row structure
 
     seqs = np.empty(
         shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2), dtype=object
@@ -236,6 +253,7 @@ def main():
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            group_hosts=args.group_hosts,
         ),
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
@@ -246,10 +264,13 @@ def main():
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            group_hosts=args.group_hosts,
         ),
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
 
+    if not args.demo:
+        train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
@@ -269,9 +290,9 @@ def main():
         try:
             model.load_weights(checkpoint_path)
             logger.info(f"Model weights loaded from {checkpoint_path}.")
-        except:
+        except Exception as e:
             logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint}. Continuing without loading checkpoint.{Style.RESET_ALL}"
+                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
             )
             checkpoint_path = None
 
@@ -279,7 +300,7 @@ def main():
         os.makedirs("checkpoints")
     checkpoint_path = (
         checkpoint_path  # if I'm loading from an existing checkpoint, don't create a new one
-        or (f'checkpoints/model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5')
+        or os.path.join("checkpoints", f"{args.run_name}.h5")
     )
 
     if args.demo:
@@ -292,11 +313,9 @@ def main():
         with open(domains_vocab_path, "r") as f:
             domains_vocab = [l.strip() for l in f.readlines()]
 
-        # seq = test
-
         seq = (
-            train.skip(args.test_seq or np.random.randint(0, 30))
-            .unbatch()
+            train.unbatch()
+            .skip(args.test_seq or np.random.randint(0, 1000))
             .take(1)
             .as_numpy_iterator()
         )
@@ -329,11 +348,12 @@ def main():
         #   always zero ^  ^  ^
         #      first token |  |
         #                     | domain
+        mask[0, 7, 0] = 1
         mask[0, 7, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
-        pred, _ = model._predict(masked_seq)
+        pred, _, loss = model._predict(masked_seq)
         pred = pred[0]
 
         for i in range(len(pred)):
@@ -348,6 +368,7 @@ def main():
                 f"{host} {true_token} {f'{Style.DIM}(was {seq[0,i,1]}) {Style.RESET_ALL}' if mask[0,i,1] else ''}-> {f'{Fore.GREEN}' if true_token == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL}"
             )
 
+        logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
         # logger.info(model.summary())
 
         sys.exit(0)

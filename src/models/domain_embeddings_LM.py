@@ -109,7 +109,7 @@ class DELM(tf.keras.Model):
         # (<MASK>, unchanged and random all count as masks)
         mask = tf.math.less(rnd, mask_p + same_p + random_p)  # [B,L]
 
-        return masked_hosts, masked_domains, mask
+        return hosts, masked_domains, mask  # now i'm not masking the host
 
     def __init__(self, **conf):
         super(DELM, self).__init__()
@@ -136,20 +136,21 @@ class DELM(tf.keras.Model):
                 self.conf[key] = conf[key]
 
         # TensorBoard Init
-        TB_PATH = "tensorboard"
+        TB_FOLDER = "tensorboard"
+        self.tb_path = None
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        if not os.path.exists(TB_PATH):
-            os.makedirs(TB_PATH)
+        if not os.path.exists(TB_FOLDER):
+            os.makedirs(TB_FOLDER)
         if not self.conf["quick_tb"]:
-            self.tb_writer = tf.summary.create_file_writer(
-                os.path.join(
-                    TB_PATH,
-                    self.conf.get("run_name", None)
-                    or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
-                )
+            self.tb_path = os.path.join(
+                TB_FOLDER,
+                self.conf.get("run_name", None)
+                or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
             )
         else:
-            self.tb_writer = tf.summary.create_file_writer(os.path.join(TB_PATH, "tmp"))
+            self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
+
+        self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         # Token Adjacency
         # self.adj_estimator = AdjacencyEstimator(
@@ -202,7 +203,7 @@ class DELM(tf.keras.Model):
         # Classification Layers
         self.classifier = Classifier([], self.ndomains)
 
-    @tf.function
+    # @tf.function
     def call(self, inputs, training=None):
         # Separate host from domain tokens in the given sequence
         hosts = self.slice_hosts(inputs)
@@ -348,21 +349,6 @@ class DELM(tf.keras.Model):
 
 
 class MHGAT_Block(tf.keras.layers.Layer):
-    # @tf.function
-    # def log_score_heatmaps(self, scores, step):
-    #     b_range = tf.range(tf.size(scores))
-    #     b_range = tf.expand_dims(b_range, axis=1)
-    #     indices = tf.concat(
-    #         [b_range, tf.zeros_like(b_range)], axis=1
-    #     )  # log only the first head for each sequence in the batch @TODO log all of them?
-    #     image = tf.expand_dims(tf.gather_nd(scores, indices), axis=-1)
-    #     with self.tb_writer.as_default():
-    #         tf.summary.image(
-    #             "att_scores",
-    #             image,
-    #             step=step,
-    #         )
-
     @tf.function
     def tb_log_image(self, name, tensor, step, minmax=False):
         if self.tensorboard:

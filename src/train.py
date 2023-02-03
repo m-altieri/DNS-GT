@@ -120,7 +120,7 @@ def parse_args():
     argparser.add_argument(
         "--gpu",
         action="store",
-        help="Set if you are running on a multi-gpu machine (es. --gpu 3)",
+        help="Only set it if you are running on a multi-gpu machine (es. --gpu 3)",
     )
     argparser.add_argument("--tensorboard", action="store_true")
     argparser.add_argument(

@@ -69,7 +69,8 @@ docker run -it --gpus all -p 6006:6006 delm "python3 train.py --gpu 0 --quick-tb
     - [x] `<START>` and `<MASK>` are always connected with all tokens
 - [x] Add an add & norm as well as a skip-connection to the MH-GAT block
 - [x] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
-- [ ] (Possibly.) Only connect token embeddings with the same host
+- [x] (Possibly.) Only connect token embeddings with the same host
+    - [x] It's not an adjacency, it's done at data pipeline level. Use --group-hosts to sort queries by host and make each sequence contain queries from the same host. The order of queries for the same host stays unchanged.
 - [ ] (Possibly.) Visualize clusters of domain embeddings
 
 *Future Extensions:*

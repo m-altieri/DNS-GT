@@ -78,12 +78,12 @@ def parse_args():
     argparser.add_argument(
         "--epochs",
         action="store",
-        default=10,
+        default=5,
         type=int,
         help="Number of training epochs",
     )
     argparser.add_argument(
-        "--bs", action="store", default=128, type=int, help="Batch size"
+        "--bs", action="store", default=256, type=int, help="Batch size"
     )
     argparser.add_argument(
         "--lr", action="store", default=1e-5, type=float, help="Learning rate"
@@ -100,7 +100,7 @@ def parse_args():
         help="Used for debugging purposes; choose the test sequence index",
     )
     argparser.add_argument(
-        "--seqlen", action="store", default=16, type=int, help="Maximum sequence length"
+        "--seqlen", action="store", default=32, type=int, help="Maximum sequence length"
     )
     argparser.add_argument(
         "--stride",
@@ -129,20 +129,21 @@ def parse_args():
         help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
     )
     argparser.add_argument("--eager", action="store_true")
-    argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument("--group-hosts", action="store_true")
+    argparser.add_argument("--blocks", action="store", type=int, default=4)
+    argparser.add_argument("--group-hosts", action="store_true", default=True)
     argparser.add_argument(
         "--run-name",
         action="store",
         default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5',
     )
-    argparser.add_argument("--omega", action="store", type=float)
+    argparser.add_argument("--omega", action="store", type=float, default=0.8)
 
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
 
     args.mask_test = not args.demo
+
     if args.demo:
         args.eager = True
         args.tensorboard = True
@@ -279,7 +280,6 @@ def main():
     checkpoint_path = None
     if args.load:
         checkpoint = find_last_checkpoint() if args.load == "last" else args.load
-
         checkpoint_path = os.path.join("checkpoints", checkpoint)
 
         logger.debug(f"Trying to load model weights from {checkpoint_path}...")
@@ -307,7 +307,7 @@ def main():
         logger.info(
             f"{Style.BRIGHT}\nDomain Embeddings Language Model v0.1{Style.RESET_ALL}\n"
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
-            + "Syntax: <Host> <Domain> (was <Unmasked Domain>) -> <Guessed Domain> (softmax score%)\n"
+            + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
 
         with open(domains_vocab_path, "r") as f:
@@ -353,19 +353,25 @@ def main():
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
-        pred, _, loss = model._predict(masked_seq)
+        pred, loss = model._predict(seq, mask)
         pred = pred[0]
 
         for i in range(len(pred)):
-            host = masked_seq[0, i, 0]
-            if type(host) is bytes:
-                host = host.decode("utf-8")
-            true_token = masked_seq[0, i, 1]
-            if type(true_token) is bytes:
-                true_token = true_token.decode("utf-8")
+
+            masked_host = masked_seq[0, i, 0]
+            if type(masked_host) is bytes:
+                masked_host = masked_host.decode("utf-8")
+            domain = seq[0, i, 1]
+            if type(domain) is bytes:
+                domain = domain.decode("utf-8")
+            masked_domain = masked_seq[0, i, 1]
+            if type(masked_domain) is bytes:
+                masked_domain = masked_domain.decode("utf-8")
+
             predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
+            domain_index = domains_vocab.index(domain)
             logger.info(
-                f"{host} {true_token} {f'{Style.DIM}(was {seq[0,i,1]}) {Style.RESET_ALL}' if mask[0,i,1] else ''}-> {f'{Fore.GREEN}' if true_token == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL}"
+                f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
             )
 
         logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
@@ -374,7 +380,6 @@ def main():
         sys.exit(0)
 
     logger.debug("Starting model training...")
-
     model.fit(
         x=train,
         y=None,
@@ -386,10 +391,15 @@ def main():
             ModelCheckpoint(checkpoint_path, monitor="loss", save_weights_only=True)
         ],
     )
-
     logger.debug(f"Model training completed.")
 
-    model.save_weights(checkpoint_path)
+    model.save_weights(checkpoint_path)  # Save model weights
+
+    domain_embeddings = model.domain_embeddings.embeddings.numpy()
+    np.save(
+        os.path.join("embeddings", f"embeddings-{os.path.splitext(checkpoint)[0]}.npy"),
+        domain_embeddings,
+    )  # Save embeddings
 
     logger.debug("Starting model evaluation...")
     model.evaluate(x=test, y=None, batch_size=args.bs)

@@ -2,6 +2,8 @@ domain_dim: 512
 host_dim: 512
 domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
+# Try starting with a higher "same" probability
+# and lowering it gradually in favor of "mask" probability
 # mask_p:
 #     mask: 0.12
 #     same: 0.015

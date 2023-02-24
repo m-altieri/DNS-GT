@@ -270,23 +270,26 @@ class DELM(tf.keras.Model):
 
         return tf.where(mask, pred, true_onehot)
 
-    @tf.function
-    def train_step(self, data):
-        x = data
-        domains = self.slice_domains(x)
-        domains = tf.squeeze(domains, axis=-1)
-        domain_indexes = self.domains_lookup(domains)  # [B, L]
+    def train_step(self, seq):
+        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
+        domain_indexes = self.domains_lookup(domains)  # [B,L]
 
         with tf.GradientTape() as tape:
-            pred, mask = self(x, training=True)  # [B,L,vsize], [B,L]
-
-            pred = self.correct_unmasked(
-                pred, mask, domain_indexes
-            )  # Only calculate loss for masked tokens
+            pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
 
             loss = self.compiled_loss(
-                domain_indexes, pred, regularization_losses=self.losses
+                tf.boolean_mask(domain_indexes, mask),
+                tf.boolean_mask(pred, mask),
+                regularization_losses=self.losses,
             )
+
+            # pred = self.correct_unmasked(
+            #     pred, mask, domain_indexes
+            # )  # Only calculate loss for masked tokens
+
+            # loss = self.compiled_loss(
+            #     domain_indexes, pred, regularization_losses=self.losses
+            # )
 
         with self.tb_writer.as_default():
             tf.summary.scalar("train_loss", loss, step=self.step)
@@ -306,36 +309,37 @@ class DELM(tf.keras.Model):
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}
 
-    @tf.function
-    def _predict(self, data):
-        x = data
+    # @tf.function
+    def _predict(self, seq, mask):
+        mask = tf.constant(mask, dtype=tf.bool)
+        domains_mask = tf.squeeze(self.slice_domains(mask), axis=-1)
 
-        pred, mask = self(x, training=False)
+        masked_seq = tf.where(mask, tf.fill(tf.shape(seq), "<MASK>"), seq)
+        pred, _ = self(masked_seq, training=False)
 
-        domains = self.slice_domains(x)
-        domains = tf.squeeze(domains, axis=-1)
+        domains = tf.squeeze(
+            self.slice_domains(seq), axis=-1
+        )  # there was a bug here. it's important to get domain indexes from the NON-masked sequence
         domain_indexes = self.domains_lookup(domains)
+
         loss = self.compiled_loss(
-            domain_indexes, pred, regularization_losses=self.losses
+            tf.boolean_mask(domain_indexes, domains_mask),
+            tf.boolean_mask(pred, domains_mask),
+            regularization_losses=self.losses,
         )
-        tf.print(domain_indexes, summarize=-1)
-        return pred, mask, loss
 
-    @tf.function
-    def test_step(self, data):
-        x = data
-        domains = self.slice_domains(x)
-        domains = tf.squeeze(domains, axis=-1)
+        return pred, loss
+
+    def test_step(self, seq):
+        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)
 
-        pred, mask = self(x, training=False)
-
-        pred = self.correct_unmasked(
-            pred, mask, domain_indexes
-        )  # Only calculate loss for masked tokens
+        pred, mask = self(seq, training=False)
 
         loss = self.compiled_loss(
-            domain_indexes, pred, regularization_losses=self.losses
+            tf.boolean_mask(domain_indexes, mask),
+            tf.boolean_mask(pred, mask),
+            regularization_losses=self.losses,
         )
 
         with self.tb_writer.as_default():
@@ -346,6 +350,32 @@ class DELM(tf.keras.Model):
 
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}
+
+    # @tf.function
+    # def test_step(self, data):
+    #     x = data
+    #     domains = self.slice_domains(x)
+    #     domains = tf.squeeze(domains, axis=-1)
+    #     domain_indexes = self.domains_lookup(domains)
+
+    #     pred, mask = self(x, training=False)
+
+    #     pred = self.correct_unmasked(
+    #         pred, mask, domain_indexes
+    #     )  # Only calculate loss for masked tokens
+
+    #     loss = self.compiled_loss(
+    #         domain_indexes, pred, regularization_losses=self.losses
+    #     )
+
+    #     with self.tb_writer.as_default():
+    #         tf.summary.scalar("val_loss", loss, step=self.step)
+
+    #     # Update metrics (includes the metric that tracks the loss)
+    #     self.compiled_metrics.update_state(domain_indexes, pred)
+
+    #     # Return a dict mapping metric names to current value
+    #     return {m.name: m.result() for m in self.metrics}
 
 
 class MHGAT_Block(tf.keras.layers.Layer):

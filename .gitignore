@@ -9,5 +9,6 @@ src/preprocessing/arrays/
 src/preprocessing/preprocessed/
 src/scripts/
 src/tensorboard/*
+src/embeddings/*
 stats/
 

@@ -203,7 +203,7 @@ def create_sequences(
 
     actual_seqlen = seqlen - include_start
 
-    queries = np.load(input_file)
+    queries = np.load(input_file, allow_pickle=True)
     if group_hosts:
         queries = queries[
             np.argsort(queries[:, 0])
@@ -270,8 +270,8 @@ def main():
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
 
-    if not args.demo:
-        train = train.shuffle(1000000)
+    #if not args.demo:
+    #    train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 

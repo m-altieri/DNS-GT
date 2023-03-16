@@ -18,11 +18,12 @@ def config_tf(args):
     if args.gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     physical_devices = tf.config.list_physical_devices("GPU")
-    try:
-        tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    except:
-        print("Cannot enable memory growth on first physical device.")
-        sys.exit(1)
+    for device in physical_devices:
+        try:
+            tf.config.experimental.set_memory_growth(device, True)
+        except:
+            print(f"Cannot enable memory growth on some device.")
+            sys.exit(1)
 
 
 def get_logger(verbose=False):
@@ -44,6 +45,7 @@ def build_model(model, args):
             quick_tb=args.quick_tb,
             run_name=args.run_name,
             omega=args.omega,
+            version=args.version,
         )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -86,7 +88,7 @@ def parse_args():
         "--bs", action="store", default=256, type=int, help="Batch size"
     )
     argparser.add_argument(
-        "--lr", action="store", default=1e-5, type=float, help="Learning rate"
+        "--lr", action="store", default=1e-4, type=float, help="Learning rate"
     )
     argparser.add_argument(
         "--demo",
@@ -137,6 +139,7 @@ def parse_args():
         default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5',
     )
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
+    argparser.add_argument("--shuffle", action="store_true")
 
     args = argparser.parse_args()
 
@@ -270,7 +273,7 @@ def main():
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
 
-    if not args.demo:
+    if not args.demo and args.shuffle:
         train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
@@ -375,7 +378,7 @@ def main():
             )
 
         logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
-        # logger.info(model.summary())
+        logger.info(model.summary())
 
         sys.exit(0)
 

@@ -120,7 +120,11 @@ class DELM(tf.keras.Model):
         self._logger.addHandler(logging.StreamHandler(sys.stdout))
 
         # Configuration
-        default_conf_file = "conf/DELM_small.yaml"
+        default_conf_file = (
+            "conf/DELM_small.yaml"
+            if conf["version"] == "small"
+            else "conf/DELM_large.yaml"
+        )
         try:
             with open(default_conf_file, "r") as f:
                 default_conf = yaml.safe_load(f)
@@ -149,7 +153,6 @@ class DELM(tf.keras.Model):
             )
         else:
             self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
-
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         # Token Adjacency

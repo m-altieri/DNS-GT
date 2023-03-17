@@ -8,6 +8,7 @@ src/models/__pycache__/
 src/preprocessing/arrays/
 src/preprocessing/preprocessed/
 src/scripts/
+!src/scripts/*.py
 src/tensorboard/*
 src/embeddings/*
 stats/

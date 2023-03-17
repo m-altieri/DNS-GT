@@ -6,6 +6,7 @@ import argparse
 import random
 from models import NSRModel
 from models import DELM
+from models import Word2Vec
 import time
 import os
 from tqdm.keras import TqdmCallback
@@ -36,7 +37,7 @@ def get_logger(verbose=False):
 
 
 def build_model(model, args):
-    if model == "delm":
+    if model.lower() == "delm":
         model = DELM(
             seqlen=args.seqlen,
             blocks=args.blocks,
@@ -47,13 +48,20 @@ def build_model(model, args):
             omega=args.omega,
             version=args.version,
         )
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-        metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
-        run_eagerly=args.eager,
-    )
-
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
+            run_eagerly=args.eager,
+        )
+    elif model.lower() == "w2v":
+        model = Word2Vec()
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
+            run_eagerly=args.eager,
+        )
     return model
 
 
@@ -140,7 +148,7 @@ def parse_args():
     )
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
     argparser.add_argument("--shuffle", action="store_true")
-
+    argparser.add_argument("model", action="store", default="DELM")
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
@@ -187,19 +195,34 @@ def parse_args():
 
 
 def seq_generator_from_folder(
-    input_folder, seqlen, stride=1, include_start=False, group_hosts=True
+    input_folder,
+    seqlen,
+    stride=1,
+    include_start=False,
+    group_hosts=True,
+    word_pairs=False,
 ):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
         seqs = create_sequences(
-            os.path.join(input_folder, f), seqlen, stride, include_start, group_hosts
+            os.path.join(input_folder, f),
+            seqlen,
+            stride,
+            include_start,
+            group_hosts,
+            word_pairs,
         )
         for seq in seqs:
             yield seq
 
 
 def create_sequences(
-    input_file, seqlen, stride=1, include_start=False, group_hosts=True
+    input_file,
+    seqlen,
+    stride=1,
+    include_start=False,
+    group_hosts=True,
+    word_pairs=False,
 ):
     # input [queries, 2]
     # output [queries - stride, seqlen, 2]
@@ -216,10 +239,17 @@ def create_sequences(
         shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2), dtype=object
     )
 
+    pairs = []  # for Word2Vec
+    print("Word pairs:", word_pairs)
     for i in range(len(seqs)):
         if include_start:
             seqs[i][0] = ["<START>", "<START>"]
         seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
+
+        if word_pairs:  # for word2vec
+            window = 3  # @TODO hardcoded
+            pairs.extend(Word2Vec.create_pairs(seqs[i, :, 1], window))
+    seqs = np.expand_dims(pairs, axis=-1)
 
     return seqs
 
@@ -250,7 +280,6 @@ def main():
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
 
     config_tf(args)
-
     train = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
@@ -258,6 +287,7 @@ def main():
             seqlen=args.seqlen,
             include_start=args.include_start,
             group_hosts=args.group_hosts,
+            word_pairs=args.model.lower() == "w2v",
         ),
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
@@ -269,6 +299,7 @@ def main():
             seqlen=args.seqlen,
             include_start=args.include_start,
             group_hosts=args.group_hosts,
+            word_pairs=args.model.lower() == "w2v",
         ),
         output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
     )
@@ -278,7 +309,7 @@ def main():
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
-    model = build_model("delm", args)
+    model = build_model(args.model, args)
 
     checkpoint_path = None
     if args.load:
@@ -319,11 +350,11 @@ def main():
         seq = (
             train.unbatch()
             .skip(args.test_seq or np.random.randint(0, 1000))
-            .take(1)
+            .take(10)
             .as_numpy_iterator()
         )
         seq = np.array([s for s in seq], dtype=object)
-
+        print(seq)
         # uncomment this assignment to manually create a sequence
         # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern in the training data
         # seq = np.array(

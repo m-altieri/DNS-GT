@@ -1,5 +1,4 @@
-domain_dim: 128
-host_dim: 128
+dim: 128
 domains_vocab_path: 'preprocessing/vocabs/all/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/all/hosts_vocab.txt'
 mask_p:

@@ -1,5 +1,4 @@
-domain_dim: 512
-host_dim: 512
+dim: 512
 domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
 # Try starting with a higher "same" probability

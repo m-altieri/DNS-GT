@@ -38,10 +38,10 @@ class Word2Vec(tf.keras.Model):
         self.ndomains = self.domain_lookup.vocabulary_size()
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,
-            output_dim=self.conf["domain_dim"],
+            output_dim=self.conf["dim"],
         )
 
-        self.hidden = tf.keras.layers.Dense(self.conf["domain_dim"], activation=None)
+        self.hidden = tf.keras.layers.Dense(self.conf["dim"], activation=None)
         self.out = tf.keras.layers.Dense(self.ndomains)
 
     @tf.function

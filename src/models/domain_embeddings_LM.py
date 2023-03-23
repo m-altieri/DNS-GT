@@ -253,6 +253,7 @@ class DELM(tf.keras.Model):
 
         return emb, mask
 
+    # Unused
     @tf.function
     def correct_unmasked(self, pred, mask, truth):
         true_onehot = tf.one_hot(
@@ -285,14 +286,6 @@ class DELM(tf.keras.Model):
                 tf.boolean_mask(pred, mask),
                 regularization_losses=self.losses,
             )
-
-            # pred = self.correct_unmasked(
-            #     pred, mask, domain_indexes
-            # )  # Only calculate loss for masked tokens
-
-            # loss = self.compiled_loss(
-            #     domain_indexes, pred, regularization_losses=self.losses
-            # )
 
         with self.tb_writer.as_default():
             tf.summary.scalar("train_loss", loss, step=self.step)
@@ -353,32 +346,6 @@ class DELM(tf.keras.Model):
 
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}
-
-    # @tf.function
-    # def test_step(self, data):
-    #     x = data
-    #     domains = self.slice_domains(x)
-    #     domains = tf.squeeze(domains, axis=-1)
-    #     domain_indexes = self.domains_lookup(domains)
-
-    #     pred, mask = self(x, training=False)
-
-    #     pred = self.correct_unmasked(
-    #         pred, mask, domain_indexes
-    #     )  # Only calculate loss for masked tokens
-
-    #     loss = self.compiled_loss(
-    #         domain_indexes, pred, regularization_losses=self.losses
-    #     )
-
-    #     with self.tb_writer.as_default():
-    #         tf.summary.scalar("val_loss", loss, step=self.step)
-
-    #     # Update metrics (includes the metric that tracks the loss)
-    #     self.compiled_metrics.update_state(domain_indexes, pred)
-
-    #     # Return a dict mapping metric names to current value
-    #     return {m.name: m.result() for m in self.metrics}
 
 
 class MHGAT_Block(tf.keras.layers.Layer):

@@ -1,11 +1,19 @@
 import tensorflow as tf
 import yaml
 from colorama import Fore, Style
+import sys
+import numpy as np
+import logging
 
 
 class Word2Vec(tf.keras.Model):
     def __init__(self, **conf):
         super(Word2Vec, self).__init__()
+
+        # Logger
+        self._logger = logging.getLogger(__name__)
+        self._logger.setLevel(logging.INFO)
+        self._logger.addHandler(logging.StreamHandler(sys.stdout))
 
         # Configuration
         default_conf_file = "conf/W2V.yaml"
@@ -22,6 +30,7 @@ class Word2Vec(tf.keras.Model):
         for key in conf:
             if conf[key] is not None:
                 self.conf[key] = conf[key]
+        assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
 
         self.domain_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.conf["domains_vocab_path"], num_oov_indices=0
@@ -31,24 +40,114 @@ class Word2Vec(tf.keras.Model):
             input_dim=self.ndomains,
             output_dim=self.conf["domain_dim"],
         )
-        return
 
-    def call(self, seq):
-        # [B,L,2]
-        B, L, _ = tf.shape(seq)
-        domains = tf.slice(seq, [0, 0, 1], [B, L, 1])
-        # pairs =
-        return
+        self.hidden = tf.keras.layers.Dense(self.conf["domain_dim"], activation=None)
+        self.out = tf.keras.layers.Dense(self.ndomains)
+
+    @tf.function
+    def call(self, inputs):
+        target_idx, context_idx = inputs
+
+        target_embs = self.domain_embeddings(target_idx)
+        context_embs = self.domain_embeddings(context_idx)
+
+        if self.conf["type"] == "CBOW":  # for CBOW, x is the context, y is the target
+            context_emb = tf.math.reduce_sum(context_embs, axis=1)
+            hidden = self.hidden(context_emb)
+            out = self.out(hidden)
+            out = tf.nn.softmax(out)
+        elif (
+            self.conf["type"] == "SkipGram"
+        ):  # for SkipGram, x is the target, y is the context
+            hidden = self.hidden(target_embs)
+            out = self.out(hidden)
+            out = tf.nn.softmax(out)
+
+        return out
+
+    def train_step(self, seq):
+        # seq: [B,L]
+        L = tf.shape(seq)[-1]
+
+        target_domains = seq[:, L // 2]
+        context_domains = tf.concat([seq[:, : L // 2], seq[:, L // 2 + 1 :]], axis=-1)
+
+        target_indexes = self.domain_lookup(target_domains)
+        context_indexes = self.domain_lookup(context_domains)
+
+        with tf.GradientTape() as tape:
+            pred = self((target_indexes, context_indexes), training=True)  # [B,vsize]
+
+            if self.conf["type"] == "CBOW":
+                loss = self.compiled_loss(
+                    target_indexes,
+                    pred,
+                    regularization_losses=self.losses,
+                )
+            elif self.conf["type"] == "SkipGram":
+                context_indexes = tf.transpose(context_indexes)  # [L,B]
+                loss = tf.map_fn(
+                    lambda e: self.compiled_loss(
+                        e, pred, regularization_losses=self.losses
+                    ),
+                    context_indexes,
+                    fn_output_signature=tf.float32,
+                )  # [B]
+
+        # Compute gradients and update weights
+        trainable_variables = self.trainable_variables
+
+        gradients = tape.gradient(loss, trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, seq):
+        L = tf.shape(seq)[-1]
+
+        target_domains = seq[:, L // 2]
+        context_domains = tf.concat([seq[:, : L // 2], seq[:, L // 2 + 1 :]], axis=-1)
+
+        target_indexes = self.domain_lookup(target_domains)
+        context_indexes = self.domain_lookup(context_domains)
+
+        pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
+
+        if self.conf["type"] == "CBOW":
+            self.compiled_loss(
+                target_indexes,
+                pred,
+                regularization_losses=self.losses,
+            )
+        elif self.conf["type"] == "SkipGram":
+            context_indexes = tf.transpose(context_indexes)  # [L,B]
+            tf.map_fn(
+                lambda e: self.compiled_loss(
+                    e, pred, regularization_losses=self.losses
+                ),
+                context_indexes,
+                fn_output_signature=tf.float32,
+            )  # [B]
+
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
 
     @staticmethod
-    def create_pairs(seq, window):
-        # For each domain in the sequence, creates tuples [(seq_i, seq_i-window), ..., (seq_i, seq_i+window)]
-        # Accepts an arbitrarily long sequence. seq is a list of tokens.
+    def create_pairs(seq, seqlen):
+        # Input: all queries
+        # Output: sequences having target domain at the middle. [..., context_-2, context_-1, target, context_+1, context_+2, ...]
+        assert seqlen % 2 == 1
+        window = seqlen // 2
         pairs = []
         for index, target in enumerate(seq):
-            for other in seq[
-                max(0, index - window) : min(index + window + 1, len(seq))
-            ]:
-                if target != other:
-                    pairs.append((target, other))
+            left_overflow = max(window - index, 0)
+            right_overflow = max(window - (len(seq) - index - 1), 0)
+            pairs.append(
+                seq[
+                    max(0, index - window - right_overflow) : min(
+                        index + window + 1 + left_overflow, len(seq)
+                    )
+                ]
+            )
         return pairs

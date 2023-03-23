@@ -44,6 +44,7 @@ def build_model(model, args):
             run_name=args.run_name,
             omega=args.omega,
             version=args.version,
+            dim=args.dim,
         )
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -52,7 +53,7 @@ def build_model(model, args):
             run_eagerly=args.eager,
         )
     elif model.lower() == "w2v":
-        model = Word2Vec(type=args.type)
+        model = Word2Vec(type=args.type, dim=args.dim)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
             loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
@@ -155,6 +156,7 @@ def parse_args():
         action="store",
         help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
     )
+    argparser.add_argument("--dim", action="store", type=int)
 
     args = argparser.parse_args()
 
@@ -421,11 +423,11 @@ def main():
                 monitor="loss",
                 save_weights_only=True,
             ),
-            TensorBoard(
-                log_dir=os.path.join("tensorboard", args.run_name),
-                histogram_freq=1,
-                profile_batch="500,520",
-            ),
+            # TensorBoard(
+            #     log_dir=os.path.join("tensorboard", args.run_name),
+            #     histogram_freq=1,
+            #     profile_batch="500,520",
+            # ),
         ],
     )
     logger.debug(f"Model training completed.")

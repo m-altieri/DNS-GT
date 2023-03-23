@@ -180,12 +180,12 @@ class DELM(tf.keras.Model):
         # Tokens Embeddings
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,
-            output_dim=self.conf["domain_dim"],
+            output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
         )
         self.host_embeddings = tf.keras.layers.Embedding(
             input_dim=self.nhosts,
-            output_dim=self.conf["host_dim"],
+            output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
         )
 
@@ -195,7 +195,7 @@ class DELM(tf.keras.Model):
         self.blocks = [
             MHGAT_Block(
                 n_heads=self.conf["n_heads"],
-                emb_dim=self.conf["domain_dim"],
+                emb_dim=self.conf["dim"],
                 block_id=block,
                 tensorboard=self.conf["tensorboard"],
                 tb_writer=self.tb_writer,

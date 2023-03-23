@@ -3,14 +3,11 @@ import os
 import tensorflow as tf
 import numpy as np
 import argparse
-import random
-from models import NSRModel
-from models import DELM
-from models import Word2Vec
+from models import DELM, Word2Vec
 import time
 import os
 from tqdm.keras import TqdmCallback
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
 import logging
 from colorama import Fore, Style
 
@@ -55,7 +52,7 @@ def build_model(model, args):
             run_eagerly=args.eager,
         )
     elif model.lower() == "w2v":
-        model = Word2Vec()
+        model = Word2Vec(type=args.type)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
             loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
@@ -125,7 +122,11 @@ def parse_args():
         help="Whether to include <START> as the first token of each sequence (total length is unaffected)",
     )
     argparser.add_argument(
-        "--version", action="store", choices=["small", "all"], default="small"
+        "--version",
+        action="store",
+        choices=["small", "all"],
+        default="small",
+        help="Version of the dataset used.",
     )
     argparser.add_argument(
         "--gpu",
@@ -149,6 +150,12 @@ def parse_args():
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
     argparser.add_argument("--shuffle", action="store_true")
     argparser.add_argument("model", action="store", default="DELM")
+    argparser.add_argument(
+        "--type",
+        action="store",
+        help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
+    )
+
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
@@ -161,56 +168,25 @@ def parse_args():
     return args
 
 
-# def main_NSRModel():
-#     args = parse_args()
-
-#     hosts, domains = load_nodes()
-#     queries = load_queries()
-
-#     H, D = len(hosts), len(domains)
-
-#     model = build_model(H, D)
-
-#     inputs = np.random.rand(H, 32)
-#     inputs = np.array([inputs for i in range(1000)])
-#     inputs = np.apply_along_axis(
-#         lambda x: x + random.uniform(-0.25, 0.25) * np.std(x), 0, inputs
-#     )
-#     print(np.shape(inputs))
-
-#     callbacks = []
-#     if args.es:
-#         callbacks.append(
-#             tf.keras.callbacks.EarlyStopping(
-#                 monitor="loss", min_delta=1e-5, patience=10
-#             )
-#         )
-#         print("Using early stopping.")
-
-#     model.fit(x=inputs, y=inputs, batch_size=16, epochs=10, callbacks=callbacks)
-
-#     print(inputs[0])
-#     out = model(inputs[0])
-#     print(out)
-
-
 def seq_generator_from_folder(
     input_folder,
     seqlen,
     stride=1,
     include_start=False,
     group_hosts=True,
-    word_pairs=False,
+    model=None,
 ):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
+        if os.path.splitext(os.path.join(input_folder, f))[-1] != ".npy":
+            continue
         seqs = create_sequences(
             os.path.join(input_folder, f),
             seqlen,
             stride,
             include_start,
             group_hosts,
-            word_pairs,
+            model,
         )
         for seq in seqs:
             yield seq
@@ -222,12 +198,8 @@ def create_sequences(
     stride=1,
     include_start=False,
     group_hosts=True,
-    word_pairs=False,
-):
-    # input [queries, 2]
-    # output [queries - stride, seqlen, 2]
-
-    actual_seqlen = seqlen - include_start
+    model=None,
+):  # input [queries, 2]
 
     queries = np.load(input_file, allow_pickle=True)
     if group_hosts:
@@ -235,31 +207,35 @@ def create_sequences(
             np.argsort(queries[:, 0])
         ]  # Sort queries by host, preserving row structure
 
-    seqs = np.empty(
-        shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2), dtype=object
-    )
+    if model == "delm":  # output [queries - stride, seqlen, 2]
+        actual_seqlen = seqlen - include_start
+        seqs = np.empty(
+            shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2),
+            dtype=object,
+        )
+        for i, _ in enumerate(seqs):
+            if include_start:
+                seqs[i][0] = ["<START>", "<START>"]
+            seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
 
-    pairs = []  # for Word2Vec
-    print("Word pairs:", word_pairs)
-    for i in range(len(seqs)):
-        if include_start:
-            seqs[i][0] = ["<START>", "<START>"]
-        seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
+    elif model == "w2v":  # output [queries, seqlen]
+        seqs = np.array(Word2Vec.create_pairs(queries[:, 1], seqlen))
 
-        if word_pairs:  # for word2vec
-            window = 3  # @TODO hardcoded
-            pairs.extend(Word2Vec.create_pairs(seqs[i, :, 1], window))
-    seqs = np.expand_dims(pairs, axis=-1)
+    else:
+        raise ValueError("Specify model to create sequences.")
 
     return seqs
 
 
 def find_last_checkpoint(dir="checkpoints"):
-    checkpoint = os.listdir(dir)[
-        [os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)].index(
-            max([os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)])
-        )
-    ]
+    if len(os.listdir(dir)) > 0:
+        checkpoint = os.listdir(dir)[
+            [os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)].index(
+                max([os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)])
+            )
+        ]
+    else:
+        checkpoint = ""
     return checkpoint
 
 
@@ -267,8 +243,11 @@ def indent(depth=1):
     return f"".join(["--" for i in range(depth - 1)]) + "> "
 
 
-def main():
+def default_checkpoint(args):
+    return args.run_name
 
+
+def main():
     args = parse_args()
 
     logger = get_logger(args.verbose)
@@ -280,6 +259,7 @@ def main():
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
 
     config_tf(args)
+
     train = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
@@ -287,11 +267,12 @@ def main():
             seqlen=args.seqlen,
             include_start=args.include_start,
             group_hosts=args.group_hosts,
-            word_pairs=args.model.lower() == "w2v",
+            model=args.model.lower(),
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
+        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        if args.model.lower() == "delm"
+        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
     )
-
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "test"),
@@ -299,9 +280,11 @@ def main():
             seqlen=args.seqlen,
             include_start=args.include_start,
             group_hosts=args.group_hosts,
-            word_pairs=args.model.lower() == "w2v",
+            model=args.model.lower(),
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string),
+        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        if args.model.lower() == "delm"
+        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
     )
 
     if not args.demo and args.shuffle:
@@ -311,31 +294,44 @@ def main():
 
     model = build_model(args.model, args)
 
-    checkpoint_path = None
-    if args.load:
-        checkpoint = find_last_checkpoint() if args.load == "last" else args.load
-        checkpoint_path = os.path.join("checkpoints", checkpoint)
-
-        logger.debug(f"Trying to load model weights from {checkpoint_path}...")
-
-        logger.info(f"Calling model to initialize layers...")
-        model(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-
-        try:
-            model.load_weights(checkpoint_path)
-            logger.info(f"Model weights loaded from {checkpoint_path}.")
-        except Exception as e:
-            logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
-            )
-            checkpoint_path = None
-
+    # Manage checkpoint
     if not os.path.exists("checkpoints"):
         os.makedirs("checkpoints")
-    checkpoint_path = (
-        checkpoint_path  # if I'm loading from an existing checkpoint, don't create a new one
-        or os.path.join("checkpoints", f"{args.run_name}.h5")
+    checkpoint_folder = os.path.join(
+        "checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
     )
+    if not os.path.exists(checkpoint_folder):
+        os.makedirs(checkpoint_folder)
+
+    checkpoint_name = default_checkpoint(args)
+
+    if args.load:
+        checkpoint_name = (
+            find_last_checkpoint(dir=checkpoint_folder)
+            if args.load == "last"
+            else args.load
+        )
+        logger.debug(
+            f"Trying to load model weights from {os.path.join(checkpoint_folder, checkpoint_name)}..."
+        )
+
+        logger.info(f"Calling model to initialize layers...")
+        # model(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
+
+        sample = np.array(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
+        logger.info(sample)
+        model.test_step(sample)
+
+        try:
+            model.load_weights(os.path.join(checkpoint_folder, checkpoint_name))
+            logger.info(
+                f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
+            )
+        except Exception as e:
+            logger.error(
+                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint_name}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
+            )
+            checkpoint_name = default_checkpoint(args)
 
     if args.demo:
         logger.info(
@@ -382,8 +378,6 @@ def main():
         #   always zero ^  ^  ^
         #      first token |  |
         #                     | domain
-        mask[0, 7, 0] = 1
-        mask[0, 7, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
@@ -422,18 +416,42 @@ def main():
         batch_size=args.bs,
         epochs=args.epochs,
         callbacks=[
-            ModelCheckpoint(checkpoint_path, monitor="loss", save_weights_only=True)
+            ModelCheckpoint(
+                os.path.join(checkpoint_folder, checkpoint_name),
+                monitor="loss",
+                save_weights_only=True,
+            ),
+            TensorBoard(
+                log_dir=os.path.join("tensorboard", args.run_name),
+                histogram_freq=1,
+                profile_batch="500,520",
+            ),
         ],
     )
     logger.debug(f"Model training completed.")
 
-    model.save_weights(checkpoint_path)  # Save model weights
+    model.save_weights(
+        os.path.join(checkpoint_folder, checkpoint_name)
+    )  # Save model weights
 
-    domain_embeddings = model.domain_embeddings.embeddings.numpy()
+    # Save embeddings
+    if not os.path.exists("embeddings"):
+        os.makedirs("embeddings")
+    embeddings_folder = os.path.join(
+        "embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
+    )
+    if not os.path.exists(embeddings_folder):
+        os.makedirs(embeddings_folder)
+
+    domain_embeddings = (
+        model.domain_embeddings.embeddings.numpy()
+    )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
     np.save(
-        os.path.join("embeddings", f"embeddings-{os.path.splitext(checkpoint)[0]}.npy"),
+        os.path.join(
+            embeddings_folder, f"embeddings-{os.path.splitext(checkpoint_name)[0]}.npy"
+        ),
         domain_embeddings,
-    )  # Save embeddings
+    )
 
     logger.debug("Starting model evaluation...")
     model.evaluate(x=test, y=None, batch_size=args.bs)

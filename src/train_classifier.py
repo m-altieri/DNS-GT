@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from sklearn.metrics import confusion_matrix, f1_score
 import argparse
 import os
 import pandas as pd
@@ -78,13 +79,8 @@ def main():
         X = X[idx]
         y = y[idx]
 
-    print(y)
-    print(positives)
-    print(X.shape)
-    print(y.shape)
-
     # Cross validation
-    nsamples = len(embs)
+    nsamples = len(X)  # len(embs) > len(X) if --balanced
     folds = 10
     RF_avg = 0
     SVC_avg = 0
@@ -100,29 +96,33 @@ def main():
 
         print(f"\n{Style.BRIGHT}Evaluating on fold {i+1}/{folds}{Style.RESET_ALL}")
         print("Evaluating RF...")
-        RF_score = evaluate_RF(train_X, train_y, test_X, test_y)
+        RF_score, RF_CM = evaluate_RF(train_X, train_y, test_X, test_y)
         RF_avg += RF_score
-        print(f"Mean accuracy: {RF_score:.3f}")
+        print(f"F1: {RF_score:.3f}")
+        print(RF_CM)
 
         print("Evaluating SVC...")
-        SVC_score = evaluate_SVC(train_X, train_y, test_X, test_y)
+        SVC_score, SVC_CM = evaluate_SVC(train_X, train_y, test_X, test_y)
         SVC_avg += SVC_score
-        print(f"Mean accuracy: {SVC_score:.3f}")
+        print(f"F1: {SVC_score:.3f}")
+        print(SVC_CM)
 
-    print(f"RF average: {RF_avg:.3f}")
-    print(f"SVC average: {SVC_avg:.3f}")
+    print(f"RF average score: {RF_avg/folds:.3f}")
+    print(f"SVC average score: {SVC_avg/folds:.3f}")
 
 
 def evaluate_RF(train_X, train_y, test_X, test_y):
-    model = RandomForestClassifier(n_estimators=10)
+    model = RandomForestClassifier(n_estimators=30)
     model.fit(train_X, train_y)
-    return model.score(test_X, test_y)
+    preds = model.predict(test_X)
+    return f1_score(test_y, preds), confusion_matrix(test_y, preds)
 
 
 def evaluate_SVC(train_X, train_y, test_X, test_y):
     model = SVC()
     model.fit(train_X, train_y)
-    return model.score(test_X, test_y)
+    preds = model.predict(test_X)
+    return f1_score(test_y, preds), confusion_matrix(test_y, preds)
 
 
 if __name__ == "__main__":

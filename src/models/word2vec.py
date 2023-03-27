@@ -38,7 +38,7 @@ class Word2Vec(tf.keras.Model):
         TB_FOLDER = "tensorboard"
         self.tb_path = None
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        if not os.exists(TB_FOLDER):
+        if not os.path.exists(TB_FOLDER):
             os.makedirs(TB_FOLDER)
         if not self.conf["quick_tb"]:
             self.tb_path = os.path.join(

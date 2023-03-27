@@ -53,7 +53,13 @@ def build_model(model, args):
             run_eagerly=args.eager,
         )
     elif model.lower() == "w2v":
-        model = Word2Vec(type=args.type, dim=args.dim)
+        model = Word2Vec(
+            type=args.type,
+            dim=args.dim,
+            tensorboard=args.tensorboard,
+            quick_tb=args.quick_tb,
+            run_name=args.run_name,
+        )
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
             loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),

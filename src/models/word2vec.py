@@ -4,6 +4,8 @@ from colorama import Fore, Style
 import sys
 import numpy as np
 import logging
+import os
+from datetime import datetime
 
 
 class Word2Vec(tf.keras.Model):
@@ -31,6 +33,22 @@ class Word2Vec(tf.keras.Model):
             if conf[key] is not None:
                 self.conf[key] = conf[key]
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
+
+        # TensorBoard Init
+        TB_FOLDER = "tensorboard"
+        self.tb_path = None
+        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
+        if not os.exists(TB_FOLDER):
+            os.makedirs(TB_FOLDER)
+        if not self.conf["quick_tb"]:
+            self.tb_path = os.path.join(
+                TB_FOLDER,
+                self.conf.get("run_name", None)
+                or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+            )
+        else:
+            self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
+        self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         self.domain_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.conf["domains_vocab_path"], num_oov_indices=0
@@ -94,11 +112,17 @@ class Word2Vec(tf.keras.Model):
                     fn_output_signature=tf.float32,
                 )  # [B]
 
+        with self.tb_writer.as_default():
+            tf.summary.scalar("train_loss", loss, step=self.step)
+
         # Compute gradients and update weights
         trainable_variables = self.trainable_variables
 
         gradients = tape.gradient(loss, trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+
+        # TensorBoard -- Increment step
+        self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}
@@ -115,20 +139,23 @@ class Word2Vec(tf.keras.Model):
         pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
 
         if self.conf["type"] == "CBOW":
-            self.compiled_loss(
+            loss = self.compiled_loss(
                 target_indexes,
                 pred,
                 regularization_losses=self.losses,
             )
         elif self.conf["type"] == "SkipGram":
             context_indexes = tf.transpose(context_indexes)  # [L,B]
-            tf.map_fn(
+            loss = tf.map_fn(
                 lambda e: self.compiled_loss(
                     e, pred, regularization_losses=self.losses
                 ),
                 context_indexes,
                 fn_output_signature=tf.float32,
             )  # [B]
+
+        with self.tb_writer.as_default():
+            tf.summary.scalar("val_loss", loss, step=self.step)
 
         # Return a dict mapping metric names to current value
         return {m.name: m.result() for m in self.metrics}

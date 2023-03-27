@@ -147,13 +147,15 @@ class Word2Vec(tf.keras.Model):
                 regularization_losses=self.losses,
             )
         elif self.conf["type"] == "SkipGram":
-            context_indexes = tf.transpose(context_indexes)  # [L,B]
-            loss = tf.map_fn(
-                lambda e: self.compiled_loss(
-                    e, pred, regularization_losses=self.losses
+            loss = tf.reduce_mean(
+                tf.map_fn(
+                    lambda e: self.compiled_loss(
+                        e, pred, regularization_losses=self.losses
+                    ),
+                    tf.transpose(context_indexes),  # [L,B]
+                    fn_output_signature=tf.float32,
                 ),
-                context_indexes,
-                fn_output_signature=tf.float32,
+                axis=-1,
             )  # [B]
 
         with self.tb_writer.as_default():

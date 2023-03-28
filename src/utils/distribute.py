@@ -1,9 +1,7 @@
 class DummyStrategy:
     class _ContextManager:
         def __enter__(self):
-            print(
-                "[Experimental] Using a dummy distribution strategy (no distribution)"
-            )
+            pass
 
         def __exit__(self, *args):
             pass

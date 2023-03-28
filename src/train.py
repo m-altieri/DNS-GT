@@ -57,7 +57,7 @@ def build_model(model, args, **kwargs):
                     from_logits=False,
                     reduction=tf.keras.losses.Reduction.NONE
                     if args.distribute
-                    else "AUTO",
+                    else "auto",
                 ),
                 metrics=[
                     tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)
@@ -198,6 +198,8 @@ def parse_args():
         assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
             "GPU"
         )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
+    else:
+        args.distribute = False
 
     args.mask_test = not args.demo
 
@@ -355,9 +357,7 @@ def main():
     model = build_model(
         args.model,
         args,
-        dist_strategy=mirrored_strategy
-        if isinstance(args.gpu, list) or args.gpu == "all"
-        else DummyStrategy,
+        dist_strategy=mirrored_strategy if args.distribute else DummyStrategy,
     )
 
     # Manage checkpoint
@@ -489,6 +489,7 @@ def main():
                     save_weights_only=True,
                 ),
             ],
+            verbose=True,
         )
     else:
         for epoch in range(args.epochs):

@@ -11,6 +11,7 @@ from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
 import logging
 from colorama import Fore, Style
 from utils.distribute import DummyStrategy
+from tqdm import tqdm
 
 
 def config_gpus(args):
@@ -341,7 +342,9 @@ def main():
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
         )  # setting None uses all gpus
         mirrored_strategy = tf.distribute.MirroredStrategy(gpus)
-        print(f"Distributing on {mirrored_strategy.num_replicas_in_sync} devices.")
+        print(
+            f"{Fore.YELLOW}Distributing on {mirrored_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
+        )
 
         # Data Config
         options = tf.data.Options()
@@ -495,10 +498,14 @@ def main():
         for epoch in range(args.epochs):
             total_loss = 0.0
             num_batches = 0
-            for x in train:
+            pbar = tqdm(
+                train,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
+            )
+            for x in pbar:
                 total_loss += model.distributed_train_step(x)
                 num_batches += 1
-                print(f"{num_batches}/?\tLoss: {total_loss / num_batches}")
+                pbar.set_description(f"Loss: {total_loss / num_batches:.4f}")
             train_loss = total_loss / num_batches
 
             for x in test:

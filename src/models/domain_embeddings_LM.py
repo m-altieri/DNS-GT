@@ -324,8 +324,7 @@ class DELM(tf.keras.Model):
         self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
-        # return {m.name: m.result() for m in self.metrics}
-        return loss
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
     # @tf.function
     def _predict(self, seq, mask):
@@ -367,7 +366,7 @@ class DELM(tf.keras.Model):
         self.compiled_metrics.update_state(domain_indexes, pred)
 
         # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
 
 class MHGAT_Block(tf.keras.layers.Layer):

@@ -10,6 +10,7 @@ from tqdm.keras import TqdmCallback
 from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
 import logging
 from colorama import Fore, Style
+from utils.distribute import DummyStrategy
 
 
 def config_gpus(args):
@@ -35,44 +36,51 @@ def get_logger(verbose=False):
 
 
 def build_model(model, args, **kwargs):
-    if model.lower() == "delm":
-        model = DELM(
-            seqlen=args.seqlen,
-            blocks=args.blocks,
-            mask_test=args.mask_test,
-            tensorboard=args.tensorboard,
-            quick_tb=args.quick_tb,
-            run_name=args.run_name,
-            omega=args.omega,
-            version=args.version,
-            dim=args.dim,
-            bs=args.bs,
-            dist_strategy=kwargs["dist_strategy"],
-        )
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(
-                from_logits=False,
-                reduction=tf.keras.losses.Reduction.NONE if args.distribute else "AUTO",
-            ),
-            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
-            run_eagerly=args.eager,
-        )
-    elif model.lower() == "w2v":
-        model = Word2Vec(
-            type=args.type,
-            dim=args.dim,
-            tensorboard=args.tensorboard,
-            quick_tb=args.quick_tb,
-            run_name=args.run_name,
-        )
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
-            run_eagerly=args.eager,
-        )
-    return model
+    with kwargs["dist_strategy"].scope():
+        if model.lower() == "delm":
+            model = DELM(
+                seqlen=args.seqlen,
+                blocks=args.blocks,
+                mask_test=args.mask_test,
+                tensorboard=args.tensorboard,
+                quick_tb=args.quick_tb,
+                run_name=args.run_name,
+                omega=args.omega,
+                version=args.version,
+                dim=args.dim,
+                bs=args.bs,
+                dist_strategy=kwargs["dist_strategy"],
+            )
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+                loss=tf.keras.losses.SparseCategoricalCrossentropy(
+                    from_logits=False,
+                    reduction=tf.keras.losses.Reduction.NONE
+                    if args.distribute
+                    else "AUTO",
+                ),
+                metrics=[
+                    tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)
+                ],
+                run_eagerly=args.eager,
+            )
+        elif model.lower() == "w2v":
+            model = Word2Vec(
+                type=args.type,
+                dim=args.dim,
+                tensorboard=args.tensorboard,
+                quick_tb=args.quick_tb,
+                run_name=args.run_name,
+            )
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+                metrics=[
+                    tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)
+                ],
+                run_eagerly=args.eager,
+            )
+        return model
 
 
 def parse_args():
@@ -187,6 +195,9 @@ def parse_args():
         pass
     if isinstance(args.gpu, int) or isinstance(args.gpu, list) or args.gpu == "all":
         args.distribute = True
+        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
+            "GPU"
+        )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
 
     args.mask_test = not args.demo
 
@@ -322,24 +333,31 @@ def main():
 
     # Distribution
     mirrored_strategy = None
-    if args.gpu == "all" or isinstance(args.gpu, list):
-        # TODO There may be a bug in case tf.config.list_physical_devices() != tf.config.get_visible_devices()
+    if args.distribute:
+        # Strategy config
         gpus = (
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
         )  # setting None uses all gpus
         mirrored_strategy = tf.distribute.MirroredStrategy(gpus)
         print(f"Distributing on {mirrored_strategy.num_replicas_in_sync} devices.")
+
+        # Data Config
+        options = tf.data.Options()
+        options.experimental_distribute.auto_shard_policy = (
+            tf.data.experimental.AutoShardPolicy.DATA
+        )
+        train = train.with_options(options)
+        test = test.with_options(options)
         train = mirrored_strategy.experimental_distribute_dataset(train)
         test = mirrored_strategy.experimental_distribute_dataset(test)
-    print(args.gpu == "all" or isinstance(args.gpu, list))
-    print(args.gpu)
-    print(f"Strategy: {mirrored_strategy}")
+
+    # Build Model
     model = build_model(
         args.model,
         args,
         dist_strategy=mirrored_strategy
         if isinstance(args.gpu, list) or args.gpu == "all"
-        else None,
+        else DummyStrategy,
     )
 
     # Manage checkpoint
@@ -456,26 +474,37 @@ def main():
         sys.exit(0)
 
     logger.debug("Starting model training...")
-    model.fit(
-        x=train,
-        y=None,
-        validation_data=test,
-        validation_freq=1,
-        batch_size=args.bs,
-        epochs=args.epochs,
-        callbacks=[
-            ModelCheckpoint(
-                os.path.join(checkpoint_folder, checkpoint_name),
-                monitor="loss",
-                save_weights_only=True,
-            ),
-            # TensorBoard(
-            #     log_dir=os.path.join("tensorboard", args.run_name),
-            #     histogram_freq=1,
-            #     profile_batch="500,520",
-            # ),
-        ],
-    )
+    if not args.distribute:
+        model.fit(
+            x=train,
+            y=None,
+            validation_data=test,
+            validation_freq=1,
+            batch_size=args.bs,
+            epochs=args.epochs,
+            callbacks=[
+                ModelCheckpoint(
+                    os.path.join(checkpoint_folder, checkpoint_name),
+                    monitor="loss",
+                    save_weights_only=True,
+                ),
+            ],
+        )
+    else:
+        for epoch in range(args.epochs):
+            total_loss = 0.0
+            num_batches = 0
+            for x in train:
+                total_loss += model.distributed_train_step(x)
+                num_batches += 1
+                print(f"{num_batches}/?\tLoss: {total_loss / num_batches}")
+            train_loss = total_loss / num_batches
+
+            for x in test:
+                model.distributed_test_step(x)
+
+            # add checkpointing
+
     logger.debug(f"Model training completed.")
 
     model.save_weights(

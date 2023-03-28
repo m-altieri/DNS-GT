@@ -283,49 +283,50 @@ class DELM(tf.keras.Model):
 
         return tf.where(mask, pred, true_onehot)
 
+    @tf.function
     def distributed_train_step(self, seq):
         loss = self.dist_strategy.run(self.train_step, args=(seq,))
         return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
+    @tf.function
     def distributed_test_step(self, seq):
         return self.dist_strategy.run(self.test_step, args=(seq,))
 
     def train_step(self, seq):
-        with self.dist_strategy.scope():
-            domains = tf.squeeze(self.slice_domains(seq), axis=-1)
-            domain_indexes = self.domains_lookup(domains)  # [B,L]
+        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
+        domain_indexes = self.domains_lookup(domains)  # [B,L]
 
-            with tf.GradientTape() as tape:
-                pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
+        with tf.GradientTape() as tape:
+            pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
 
-                loss = self.compiled_loss(
-                    tf.boolean_mask(domain_indexes, mask),
-                    tf.boolean_mask(pred, mask),
-                    regularization_losses=self.losses,
+            loss = self.compiled_loss(
+                tf.boolean_mask(domain_indexes, mask),
+                tf.boolean_mask(pred, mask),
+                regularization_losses=self.losses,
+            )
+            if self.distributed:
+                loss = tf.nn.compute_average_loss(
+                    loss, global_batch_size=self.conf["bs"]
                 )
-                if self.distributed:
-                    loss = tf.nn.compute_average_loss(
-                        loss, global_batch_size=self.conf["bs"]
-                    )
 
-            # Compute gradients and update weights
-            trainable_variables = self.trainable_variables
+        # Compute gradients and update weights
+        trainable_variables = self.trainable_variables
 
-            gradients = tape.gradient(loss, trainable_variables)
-            self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+        gradients = tape.gradient(loss, trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, trainable_variables))
 
-            # Update metrics (includes the metric that tracks the loss)
-            self.compiled_metrics.update_state(domain_indexes, pred)
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(domain_indexes, pred)
 
-            with self.tb_writer.as_default():
-                tf.summary.scalar("train_loss", loss, step=self.step)
+        with self.tb_writer.as_default():
+            tf.summary.scalar("train_loss", loss, step=self.step)
 
-            # TensorBoard -- Increment step
-            self.step.assign_add(tf.constant(1, dtype=tf.int64))
+        # TensorBoard -- Increment step
+        self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
-            # Return a dict mapping metric names to current value
-            # return {m.name: m.result() for m in self.metrics}
-            return loss
+        # Return a dict mapping metric names to current value
+        # return {m.name: m.result() for m in self.metrics}
+        return loss
 
     # @tf.function
     def _predict(self, seq, mask):

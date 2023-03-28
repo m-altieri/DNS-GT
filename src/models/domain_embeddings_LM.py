@@ -8,6 +8,7 @@ import os
 from types import SimpleNamespace as NS
 import datetime
 import time
+from utils.distribute import DummyStrategy
 
 
 class DELM(tf.keras.Model):
@@ -155,6 +156,14 @@ class DELM(tf.keras.Model):
             self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
+        if "dist_strategy" in self.conf:
+            self.dist_strategy = self.conf["dist_strategy"]
+            self.distributed = True
+        else:
+            self.dist_strategy = DummyStrategy
+        self._logger.info(
+            f"Initializing model with distribution strategy: {self.dist_strategy}"
+        )
         # Token Adjacency
         # self.adj_estimator = AdjacencyEstimator(
         #     type="binary", normalize=False, tb_writer=self.tb_writer
@@ -274,36 +283,49 @@ class DELM(tf.keras.Model):
 
         return tf.where(mask, pred, true_onehot)
 
+    def distributed_train_step(self, seq):
+        loss = self.dist_strategy.run(self.train_step, args=(seq,))
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+
+    def distributed_test_step(self, seq):
+        return self.dist_strategy.run(self.test_step, args=(seq,))
+
     def train_step(self, seq):
-        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
-        domain_indexes = self.domains_lookup(domains)  # [B,L]
+        with self.dist_strategy.scope():
+            domains = tf.squeeze(self.slice_domains(seq), axis=-1)
+            domain_indexes = self.domains_lookup(domains)  # [B,L]
 
-        with tf.GradientTape() as tape:
-            pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
+            with tf.GradientTape() as tape:
+                pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
 
-            loss = self.compiled_loss(
-                tf.boolean_mask(domain_indexes, mask),
-                tf.boolean_mask(pred, mask),
-                regularization_losses=self.losses,
-            )
+                loss = self.compiled_loss(
+                    tf.boolean_mask(domain_indexes, mask),
+                    tf.boolean_mask(pred, mask),
+                    regularization_losses=self.losses,
+                )
+                if self.distributed:
+                    loss = tf.nn.compute_average_loss(
+                        loss, global_batch_size=self.conf["bs"]
+                    )
 
-        with self.tb_writer.as_default():
-            tf.summary.scalar("train_loss", loss, step=self.step)
+            # Compute gradients and update weights
+            trainable_variables = self.trainable_variables
 
-        # Compute gradients and update weights
-        trainable_variables = self.trainable_variables
+            gradients = tape.gradient(loss, trainable_variables)
+            self.optimizer.apply_gradients(zip(gradients, trainable_variables))
 
-        gradients = tape.gradient(loss, trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+            # Update metrics (includes the metric that tracks the loss)
+            self.compiled_metrics.update_state(domain_indexes, pred)
 
-        # Update metrics (includes the metric that tracks the loss)
-        self.compiled_metrics.update_state(domain_indexes, pred)
+            with self.tb_writer.as_default():
+                tf.summary.scalar("train_loss", loss, step=self.step)
 
-        # TensorBoard -- Increment step
-        self.step.assign_add(tf.constant(1, dtype=tf.int64))
+            # TensorBoard -- Increment step
+            self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
-        # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+            # Return a dict mapping metric names to current value
+            # return {m.name: m.result() for m in self.metrics}
+            return loss
 
     # @tf.function
     def _predict(self, seq, mask):

@@ -12,15 +12,16 @@ import logging
 from colorama import Fore, Style
 
 
-def config_tf(args):
-    if args.gpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    physical_devices = tf.config.list_physical_devices("GPU")
-    for device in physical_devices:
+def config_gpus(args):
+    if isinstance(args.gpu, int):
+        device = tf.config.list_physical_devices("GPU")[args.gpu]
+        tf.config.set_visible_devices(device, "GPU")
+        print(f"Set {device} as the only visible device.")
+    for device in tf.config.get_visible_devices("GPU"):
         try:
             tf.config.experimental.set_memory_growth(device, True)
         except:
-            print(f"Cannot enable memory growth on some device.")
+            print("Cannot enable memory growth on device:", device)
             sys.exit(1)
 
 
@@ -33,7 +34,7 @@ def get_logger(verbose=False):
     return logger
 
 
-def build_model(model, args):
+def build_model(model, args, **kwargs):
     if model.lower() == "delm":
         model = DELM(
             seqlen=args.seqlen,
@@ -45,10 +46,15 @@ def build_model(model, args):
             omega=args.omega,
             version=args.version,
             dim=args.dim,
+            bs=args.bs,
+            dist_strategy=kwargs["dist_strategy"],
         )
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(
+                from_logits=False,
+                reduction=tf.keras.losses.Reduction.NONE if args.distribute else "AUTO",
+            ),
             metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
             run_eagerly=args.eager,
         )
@@ -138,7 +144,9 @@ def parse_args():
     argparser.add_argument(
         "--gpu",
         action="store",
-        help="Only set it if you are running on a multi-gpu machine (es. --gpu 3)",
+        help="If it is an integer (eg. --gpu 3), run on a single specific GPU. "
+        + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "  # TODO
+        + "If it is `all`, distribute on all GPUs.",
     )
     argparser.add_argument("--tensorboard", action="store_true")
     argparser.add_argument(
@@ -167,6 +175,18 @@ def parse_args():
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
+
+    try:
+        args.gpu = int(args.gpu)
+    except:  # it is not a number, it's either None or `all`
+        pass
+    try:
+        if "[" in args.gpu:  # if it is a list
+            args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
+    except:  # it is not a list, let's try with a number
+        pass
+    if isinstance(args.gpu, int) or isinstance(args.gpu, list) or args.gpu == "all":
+        args.distribute = True
 
     args.mask_test = not args.demo
 
@@ -266,8 +286,9 @@ def main():
     domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
 
-    config_tf(args)
+    config_gpus(args)
 
+    # Data Pipeline
     train = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
@@ -294,13 +315,32 @@ def main():
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
     )
-
     if not args.demo and args.shuffle:
         train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
-    model = build_model(args.model, args)
+    # Distribution
+    mirrored_strategy = None
+    if args.gpu == "all" or isinstance(args.gpu, list):
+        # TODO There may be a bug in case tf.config.list_physical_devices() != tf.config.get_visible_devices()
+        gpus = (
+            [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
+        )  # setting None uses all gpus
+        mirrored_strategy = tf.distribute.MirroredStrategy(gpus)
+        print(f"Distributing on {mirrored_strategy.num_replicas_in_sync} devices.")
+        train = mirrored_strategy.experimental_distribute_dataset(train)
+        test = mirrored_strategy.experimental_distribute_dataset(test)
+    print(args.gpu == "all" or isinstance(args.gpu, list))
+    print(args.gpu)
+    print(f"Strategy: {mirrored_strategy}")
+    model = build_model(
+        args.model,
+        args,
+        dist_strategy=mirrored_strategy
+        if isinstance(args.gpu, list) or args.gpu == "all"
+        else None,
+    )
 
     # Manage checkpoint
     if not os.path.exists("checkpoints"):

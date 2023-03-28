@@ -158,12 +158,11 @@ class DELM(tf.keras.Model):
 
         if "dist_strategy" in self.conf:
             self.dist_strategy = self.conf["dist_strategy"]
-            self.distributed = True
-        else:
-            self.dist_strategy = DummyStrategy
-        self._logger.info(
-            f"Initializing model with distribution strategy: {self.dist_strategy}"
-        )
+            self.distributed = self.dist_strategy is not DummyStrategy
+        if self.distributed:
+            self._logger.info(
+                f"Initializing model with distribution strategy: {self.dist_strategy}"
+            )
         # Token Adjacency
         # self.adj_estimator = AdjacencyEstimator(
         #     type="binary", normalize=False, tb_writer=self.tb_writer

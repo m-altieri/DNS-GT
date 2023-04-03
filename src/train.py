@@ -387,9 +387,9 @@ def main():
         logger.info(f"Calling model to initialize layers...")
         # model(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
 
-        sample = np.array(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-        logger.info(sample)
-        model.test_step(sample)
+        # sample = np.array(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
+        # logger.info(sample)
+        model.distributed_test_step(next(iter(test)))
 
         try:
             model.load_weights(os.path.join(checkpoint_folder, checkpoint_name))
@@ -492,7 +492,6 @@ def main():
                     save_weights_only=True,
                 ),
             ],
-            verbose=True,
         )
     else:
         for epoch in range(args.epochs):
@@ -509,9 +508,13 @@ def main():
             train_loss = total_loss / num_batches
 
             for x in test:
-                model.distributed_test_step(x)
+                total_loss += model.distributed_test_step(x)
+                num_batches += 1
+            logger.info(f"Test Loss: {total_loss / num_batches:.4f}")
 
-            # add checkpointing
+            model.save_weights(
+                os.path.join(checkpoint_folder, checkpoint_name)
+            )  # Save model weights
 
     logger.debug(f"Model training completed.")
 

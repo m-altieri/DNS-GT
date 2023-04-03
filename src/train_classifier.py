@@ -12,6 +12,13 @@ def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("emb_file", action="store")
     argparser.add_argument("--balanced", action="store_true")
+    argparser.add_argument(
+        "--category",
+        action="store",
+        default="any",
+        choices=["advertising", "malicious", "suspicious", "tracking", "other", "any"],
+    )
+    argparser.add_argument("--q", action="store", default="ok", choices=["good", "ok"])
     return argparser.parse_args()
 
 
@@ -60,7 +67,7 @@ def main():
     labels = labels.reset_index()
     print(labels)
 
-    labels = labels["any", "ok"]
+    labels = labels[args.category, args.q]
     print(labels)
 
     X = np.array(embs)
@@ -78,6 +85,9 @@ def main():
         print(idx)
         X = X[idx]
         y = y[idx]
+        print(
+            f"Balanced: {len(pos_idx)} positives, {len(neg_idx)} negatives; X: {X.shape}"
+        )
 
     # Cross validation
     nsamples = len(X)  # len(embs) > len(X) if --balanced
@@ -112,7 +122,7 @@ def main():
 
 
 def evaluate_RF(train_X, train_y, test_X, test_y):
-    model = RandomForestClassifier(n_estimators=30)
+    model = RandomForestClassifier(n_estimators=100)
     model.fit(train_X, train_y)
     preds = model.predict(test_X)
     return f1_score(test_y, preds), confusion_matrix(test_y, preds)

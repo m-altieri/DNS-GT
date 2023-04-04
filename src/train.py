@@ -482,9 +482,9 @@ def main():
             with dist_strategy.scope():  # not sure if the scope is needed
                 model.load_weights(
                     os.path.join(checkpoint_folder, checkpoint_name),
-                    # skip_mismatch=True, # non sembra servire
-                    # by_name=True, # e questo?
-                )
+                    # skip_mismatch=True,
+                    # by_name=True,
+                )  # for now these 2 args don't seem needed, but keep an eye on
             logger.info(
                 f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
             )

@@ -121,6 +121,8 @@ class DELM(tf.keras.Model):
         self.host_embeddings.trainable = True
         for block in self.blocks:
             block.trainable = True
+        self.masked_classifier.trainable = True
+        self.binary_classifier.trainable = False
         self.frozen = False
 
     def finetune(self):
@@ -128,6 +130,8 @@ class DELM(tf.keras.Model):
         self.host_embeddings.trainable = False
         for block in self.blocks:
             block.trainable = False
+        self.masked_classifier.trainable = False
+        self.binary_classifier.trainable = True
         self.frozen = True
 
     def __init__(self, **conf):
@@ -233,9 +237,13 @@ class DELM(tf.keras.Model):
 
         # Classification Layers
         self.masked_classifier = FF(
-            [self.ndomains], ["softmax"]
+            [self.ndomains],
+            ["softmax"],
         )  # Softmax masking classifier
-        self.binary_classifier = FF([1], ["sigmoid"])  # Binary classifier
+        self.binary_classifier = FF(
+            [1],
+            ["sigmoid"],
+        )  # Binary classifier
 
     # @tf.function
     def call(self, inputs, training=None, **kwargs):
@@ -287,12 +295,16 @@ class DELM(tf.keras.Model):
         for block in self.blocks:
             emb = block(emb, adj_h, step=self.step)
 
+        # Force initializiation of weights for both layers
+        # by calling them both even if not needed;
+        # this prevents problems when loading weights
+        softmax = self.masked_classifier(emb)
+        c = self.binary_classifier(emb)
         if not self.frozen:
-            # Call classification layers on final embeddings
-            emb = self.masked_classifier(emb)
+            res = softmax
         else:
-            emb = self.binary_classifier(emb)
-        return emb, mask
+            res = c
+        return res, mask
 
     # UNUSED
     @tf.function
@@ -368,6 +380,8 @@ class DELM(tf.keras.Model):
         return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
     def test_step(self, seq):
+        if self.frozen:
+            seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)
 
@@ -375,11 +389,15 @@ class DELM(tf.keras.Model):
             seq, training=False, force_masking=True
         )  # without force_masking, we have no test loss
 
-        loss = self.compiled_loss(
-            tf.boolean_mask(domain_indexes, mask),
-            tf.boolean_mask(pred, mask),
-            regularization_losses=self.losses,
-        )
+        if not self.frozen:
+            loss = self.compiled_loss(
+                tf.boolean_mask(domain_indexes, mask),
+                tf.boolean_mask(pred, mask),
+                regularization_losses=self.losses,
+            )
+        else:
+            loss = self.compiled_loss(tf.squeeze(pred), y)
+
         if self.distributed:
             # TODO Check that the distributed loss is calculated correctly,
             # especially considering that tf.size(loss) is different every time and a bit random
@@ -486,12 +504,15 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Feed Forward NN
         self.linear1 = tf.keras.layers.Dense(
-            self.emb_dim
+            self.emb_dim,
         )  # dall'eq. (2) di Vaswani sembra che questo linear1 non ci sia
         self.nonlinear = tf.keras.layers.Dense(
-            self.emb_dim * self.nonlinear_stretch, activation="relu"
+            self.emb_dim * self.nonlinear_stretch,
+            activation="relu",
         )
-        self.linear2 = tf.keras.layers.Dense(self.emb_dim)
+        self.linear2 = tf.keras.layers.Dense(
+            self.emb_dim,
+        )
 
         # Batch Normalization
         self.bn2 = tf.keras.layers.BatchNormalization()

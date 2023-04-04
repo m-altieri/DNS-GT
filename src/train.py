@@ -155,6 +155,11 @@ def parse_args():
         help="Version of the dataset used.",
     )
     argparser.add_argument(
+        "--tiny",
+        action="store_true",
+        help="Use for debugging purposes, to use a tiny portion of the dataset to get faster feedback.",
+    )
+    argparser.add_argument(
         "--gpu",
         action="store",
         help="If it is an integer (eg. --gpu 3), run on a single specific GPU. "
@@ -183,8 +188,17 @@ def parse_args():
         action="store",
         help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
     )
-    argparser.add_argument("--dim", action="store", type=int)
-    argparser.add_argument("--finetune", action="store_true")
+    argparser.add_argument(
+        "--dim",
+        action="store",
+        type=int,
+        help="Dimension of the embeddings. Now host and domain embeddings always have the same dimension.",
+    )
+    argparser.add_argument(
+        "--finetune",
+        action="store_true",
+        help="Freeze all layers and use the classification workflow instead of the embedding learning workflow.",
+    )
 
     args = argparser.parse_args()
 
@@ -223,6 +237,7 @@ def seq_generator_from_folder(
     group_hosts=True,
     model=None,
     vocab=None,
+    tiny_amount=None,
 ):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
@@ -237,6 +252,7 @@ def seq_generator_from_folder(
             group_hosts,
             model,
             vocab,
+            tiny_amount,
         )
         for seq in seqs:
             yield seq
@@ -251,9 +267,13 @@ def create_sequences(
     group_hosts=True,
     model=None,
     vocab=None,
-):  # input [queries, 2]
+    tiny_amount=None,
+):
 
     queries = np.load(input_file, allow_pickle=True)
+
+    if tiny_amount:
+        queries = queries[:10000]
 
     if include_class:
         labels = pd.read_csv(
@@ -280,9 +300,11 @@ def create_sequences(
         labels = labels[labels["domain"].isin(vocab)]
         labels = labels.reset_index()
 
+        # take (any, ok) column
         labels = labels[["domain", "any"]]
-        labels = labels.to_numpy()[:, [0, 2]]  # take 'ok' column
+        labels = labels.to_numpy()[:, [0, 2]]
 
+        # add class to each query
         sorter = np.argsort(labels[:, 0])
         idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
         classes = labels[idx, 1]
@@ -290,10 +312,8 @@ def create_sequences(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
         )
 
-    if group_hosts:
-        queries = queries[
-            np.argsort(queries[:, 0])
-        ]  # Sort queries by host, preserving row structure
+    if group_hosts:  # sort queries by host, preserving row structure
+        queries = queries[np.argsort(queries[:, 0])]
 
     if model == "delm":  # output [queries - stride, seqlen, 2 or 3]
         actual_seqlen = seqlen - include_start
@@ -366,6 +386,7 @@ def main():
             group_hosts=args.group_hosts,
             model=args.model.lower(),
             vocab=domains_vocab,
+            tiny_amount=args.tiny,
         ),
         output_signature=tf.TensorSpec(
             shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
@@ -383,6 +404,7 @@ def main():
             group_hosts=args.group_hosts,
             model=args.model.lower(),
             vocab=domains_vocab,
+            tiny_amount=args.tiny,
         ),
         output_signature=tf.TensorSpec(
             shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
@@ -394,17 +416,17 @@ def main():
         train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
-
+    args.distribute = False  ###
     # Distribution
-    mirrored_strategy = None
+    dist_strategy = None
     if args.distribute:
         # Strategy config
         gpus = (
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
         )  # setting None uses all gpus
-        mirrored_strategy = tf.distribute.MirroredStrategy(gpus)
+        dist_strategy = tf.distribute.MirroredStrategy(gpus)
         print(
-            f"{Fore.YELLOW}Distributing on {mirrored_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
+            f"{Fore.YELLOW}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
         )
 
         # Data Config
@@ -414,14 +436,16 @@ def main():
         )
         train = train.with_options(options)
         test = test.with_options(options)
-        train = mirrored_strategy.experimental_distribute_dataset(train)
-        test = mirrored_strategy.experimental_distribute_dataset(test)
+        train = dist_strategy.experimental_distribute_dataset(train)
+        test = dist_strategy.experimental_distribute_dataset(test)
+    else:
+        dist_strategy = DummyStrategy
 
     # Build Model
     model = build_model(
         args.model,
         args,
-        dist_strategy=mirrored_strategy if args.distribute else DummyStrategy,
+        dist_strategy=dist_strategy,
     )
 
     # Manage checkpoint
@@ -452,7 +476,15 @@ def main():
             model.test_step(next(iter(test)))
 
         try:
-            model.load_weights(os.path.join(checkpoint_folder, checkpoint_name))
+            logger.info(
+                f"Trying to load weights from {os.path.join(checkpoint_folder, checkpoint_name)}..."
+            )
+            with dist_strategy.scope():  # not sure if the scope is needed
+                model.load_weights(
+                    os.path.join(checkpoint_folder, checkpoint_name),
+                    # skip_mismatch=True, # non sembra servire
+                    # by_name=True, # e questo?
+                )
             logger.info(
                 f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
             )
@@ -554,7 +586,7 @@ def main():
                 ),
             ],
         )
-    else:
+    else:  # if args.distribute
         for epoch in range(args.epochs):
             total_loss = 0.0
             num_batches = 0
@@ -562,26 +594,29 @@ def main():
                 train,
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
             )
+
+            # Train loop
             for x in pbar:
                 total_loss += model.distributed_train_step(x)
                 num_batches += 1
                 pbar.set_description(f"Loss: {total_loss / num_batches:.4f}")
             train_loss = total_loss / num_batches
 
+            # Test loop
             for x in test:
                 total_loss += model.distributed_test_step(x)
                 num_batches += 1
             logger.info(f"Test Loss: {total_loss / num_batches:.4f}")
 
-            model.save_weights(
-                os.path.join(checkpoint_folder, checkpoint_name)
-            )  # Save model weights
+            # Save model weights
+            model.save_weights(os.path.join(checkpoint_folder, checkpoint_name))
 
     logger.debug(f"Model training completed.")
 
-    model.save_weights(
-        os.path.join(checkpoint_folder, checkpoint_name)
-    )  # Save model weights
+    with dist_strategy.scope():  # not sure if the scope is needed
+        model.save_weights(
+            os.path.join(checkpoint_folder, checkpoint_name)
+        )  # Save model weights
 
     # Save embeddings
     if not os.path.exists("embeddings"):

@@ -416,7 +416,7 @@ def main():
         train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
-    args.distribute = False  ###
+
     # Distribution
     dist_strategy = None
     if args.distribute:
@@ -482,9 +482,9 @@ def main():
             with dist_strategy.scope():  # not sure if the scope is needed
                 model.load_weights(
                     os.path.join(checkpoint_folder, checkpoint_name),
-                    # skip_mismatch=True,
-                    # by_name=True,
-                )  # for now these 2 args don't seem needed, but keep an eye on
+                    skip_mismatch=True,
+                    by_name=True,
+                )
             logger.info(
                 f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
             )
@@ -609,7 +609,8 @@ def main():
             logger.info(f"Test Loss: {total_loss / num_batches:.4f}")
 
             # Save model weights
-            model.save_weights(os.path.join(checkpoint_folder, checkpoint_name))
+            with dist_strategy.scope():
+                model.save_weights(os.path.join(checkpoint_folder, checkpoint_name))
 
     logger.debug(f"Model training completed.")
 

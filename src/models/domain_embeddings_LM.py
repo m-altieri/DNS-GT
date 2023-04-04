@@ -119,8 +119,8 @@ class DELM(tf.keras.Model):
     def pretrain(self):
         self.domain_embeddings.trainable = True
         self.host_embeddings.trainable = True
-        for block in self.blocks:
-            block.trainable = True
+        # for block in self.blocks:
+        #     block.set_trainable(True)
         self.masked_classifier.trainable = True
         self.binary_classifier.trainable = False
         self.frozen = False
@@ -128,8 +128,11 @@ class DELM(tf.keras.Model):
     def finetune(self):
         self.domain_embeddings.trainable = False
         self.host_embeddings.trainable = False
-        for block in self.blocks:
-            block.trainable = False
+        # FIXME Now I'm not disabling the block weights, but I should
+        # the problem is that disabling the block weights causes problems
+        # when it comes to loading finetuning weights in distributed mode
+        # for block in self.blocks:
+        #     block.set_trainable(False)
         self.masked_classifier.trainable = False
         self.binary_classifier.trainable = True
         self.frozen = True
@@ -461,6 +464,18 @@ class MHGAT_Block(tf.keras.layers.Layer):
             tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
             tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
         )
+
+    def set_trainable(self, trainable):
+        for W in self.Wq:
+            W.trainable = trainable
+        for W in self.Wk:
+            W.trainable = trainable
+        for W in self.Wv:
+            W.trainable = trainable
+        self.Wo.trainable = trainable
+        self.linear1.trainable = trainable
+        self.nonlinear.trainable = trainable
+        self.linear2.trainable = trainable
 
     def __init__(self, n_heads, emb_dim, **kwargs):
         super(MHGAT_Block, self).__init__()

@@ -13,6 +13,7 @@ class DELM(tf.keras.Model):
     def get_config(self):
         return self.conf
 
+    # UNUSED
     @tf.function
     def onehot(self, seq, vocab_length):
         """seq must contain token indexes (integers)."""
@@ -33,7 +34,7 @@ class DELM(tf.keras.Model):
         )
 
     @tf.function
-    def tb_log_weights(self, vars, every):  # @TODO
+    def tb_log_weights(self, vars, every):  # TODO
         pass
         # def body():
         #     with self.tb_writer.as_default():
@@ -237,7 +238,7 @@ class DELM(tf.keras.Model):
         self.binary_classifier = FF([1], ["sigmoid"])  # Binary classifier
 
     # @tf.function
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, **kwargs):
         # Separate host from domain tokens in the given sequence
         hosts = self.slice_hosts(inputs)
         domains = self.slice_domains(inputs)  # [B,L,1]
@@ -254,7 +255,10 @@ class DELM(tf.keras.Model):
             mask_p,
             same_p,
             random_p,
-            prevent_masking=not training or not self.conf["mask_test"] or self.frozen,
+            prevent_masking=(not training or not self.conf["mask_test"] or self.frozen)
+            and not kwargs.get(
+                "force_masking"
+            ),  # test_step() è training=False, ma ha comunque bisogno del masking
         )
 
         # adj_h = self.adj_estimator(
@@ -273,7 +277,7 @@ class DELM(tf.keras.Model):
         e_h = self.host_embeddings(host_indexes)
 
         # Weighted sum of host and domain embeddings (according to omega)
-        # @TODO @ISSUE This can only be done if domain dim and host dim are the same!
+        # TODO This can only be done if domain dim and host dim are the same!
         emb = self.conf["omega"] * e_d + (1 - self.conf["omega"]) * e_h
 
         # Dropout the embeddings before feeding to MHGAT blocks
@@ -290,7 +294,7 @@ class DELM(tf.keras.Model):
             emb = self.binary_classifier(emb)
         return emb, mask
 
-    # Unused
+    # UNUSED
     @tf.function
     def correct_unmasked(self, pred, mask, truth):
         true_onehot = tf.one_hot(
@@ -321,7 +325,9 @@ class DELM(tf.keras.Model):
         loss = self.dist_strategy.run(self.test_step, args=(seq,))
         return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
-    def train_step(self, seq, y=None):
+    def train_step(self, seq):
+        if self.frozen:
+            seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)  # [B,L]
 
@@ -335,7 +341,7 @@ class DELM(tf.keras.Model):
                     regularization_losses=self.losses,
                 )
             else:
-                loss = self.compiled_loss(pred, y)
+                loss = self.compiled_loss(tf.squeeze(pred), y)
             if self.distributed:
                 # TODO Check that the distributed loss is calculated correctly,
                 # especially considering that tf.size(loss) is different every time and a bit random
@@ -365,7 +371,9 @@ class DELM(tf.keras.Model):
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)
 
-        pred, mask = self(seq, training=False)
+        pred, mask = self(
+            seq, training=False, force_masking=True
+        )  # without force_masking, we have no test loss
 
         loss = self.compiled_loss(
             tf.boolean_mask(domain_indexes, mask),
@@ -562,7 +570,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
 
 class FF(tf.keras.layers.Layer):
-    def __init__(self, dims, activations):
+    def __init__(self, dims, activations, **kwargs):
         super(FF, self).__init__()
         assert len(dims) == len(activations)
         self.dense_layers = [
@@ -580,8 +588,8 @@ class FF(tf.keras.layers.Layer):
 class AdjacencyEstimator(tf.keras.layers.Layer):
     @tf.function
     def duplicate_axis(self, tensor, from_axis, to_axis, order="C"):
-        """@TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize
-        tensor: input tensor
+        # TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize
+        """tensor: input tensor
         from_axis: the axis to duplicate
         to_axis: the position of the new duplicated axis
         order: 'C' for c-style ordering, 'F' for fortran-style ordering

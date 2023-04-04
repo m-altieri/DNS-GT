@@ -12,6 +12,7 @@ import logging
 from colorama import Fore, Style
 from utils.distribute import DummyStrategy
 from tqdm import tqdm
+import pandas as pd
 
 
 def config_gpus(args):
@@ -52,17 +53,22 @@ def build_model(model, args, **kwargs):
                 bs=args.bs,
                 dist_strategy=kwargs["dist_strategy"],
             )
+            loss_reduction = (
+                tf.keras.losses.Reduction.NONE if args.distribute else "auto"
+            )
+            loss = (
+                tf.keras.losses.SparseCategoricalCrossentropy(
+                    from_logits=False, reduction=loss_reduction
+                )
+                if not args.finetune
+                else tf.keras.losses.BinaryCrossentropy(
+                    from_logits=False, reduction=loss_reduction
+                )
+            )
             model.compile(
                 optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-                loss=tf.keras.losses.SparseCategoricalCrossentropy(
-                    from_logits=False,
-                    reduction=tf.keras.losses.Reduction.NONE
-                    if args.distribute
-                    else "auto",
-                ),
-                metrics=[
-                    tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)
-                ],
+                loss=loss,
+                metrics=[],
                 run_eagerly=args.eager,
             )
         elif model.lower() == "w2v":
@@ -75,10 +81,8 @@ def build_model(model, args, **kwargs):
             )
             model.compile(
                 optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-                metrics=[
-                    tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)
-                ],
+                loss=loss,
+                metrics=[],
                 run_eagerly=args.eager,
             )
         return model
@@ -169,7 +173,7 @@ def parse_args():
     argparser.add_argument(
         "--run-name",
         action="store",
-        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5',
+        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
     )
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
     argparser.add_argument("--shuffle", action="store_true")
@@ -180,6 +184,7 @@ def parse_args():
         help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
     )
     argparser.add_argument("--dim", action="store", type=int)
+    argparser.add_argument("--finetune", action="store_true")
 
     args = argparser.parse_args()
 
@@ -194,7 +199,7 @@ def parse_args():
             args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
     except:  # it is not a list, let's try with a number
         pass
-    if isinstance(args.gpu, int) or isinstance(args.gpu, list) or args.gpu == "all":
+    if isinstance(args.gpu, list) or args.gpu == "all":
         args.distribute = True
         assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
             "GPU"
@@ -203,7 +208,6 @@ def parse_args():
         args.distribute = False
 
     args.mask_test = not args.demo
-
     if args.demo:
         args.eager = True
         args.tensorboard = True
@@ -215,8 +219,10 @@ def seq_generator_from_folder(
     seqlen,
     stride=1,
     include_start=False,
+    include_class=False,
     group_hosts=True,
     model=None,
+    vocab=None,
 ):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
@@ -227,8 +233,10 @@ def seq_generator_from_folder(
             seqlen,
             stride,
             include_start,
+            include_class,
             group_hosts,
             model,
+            vocab,
         )
         for seq in seqs:
             yield seq
@@ -239,20 +247,62 @@ def create_sequences(
     seqlen,
     stride=1,
     include_start=False,
+    include_class=False,
     group_hosts=True,
     model=None,
+    vocab=None,
 ):  # input [queries, 2]
 
     queries = np.load(input_file, allow_pickle=True)
+
+    if include_class:
+        labels = pd.read_csv(
+            os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
+        )
+        labels.columns = pd.MultiIndex.from_tuples(
+            [
+                ("domain", ""),
+                ("advertising", "good"),
+                ("advertising", "ok"),
+                ("malicious", "good"),
+                ("malicious", "ok"),
+                ("suspicious", "good"),
+                ("suspicious", "ok"),
+                ("tracking", "good"),
+                ("tracking", "ok"),
+                ("other", "good"),
+                ("other", "ok"),
+                ("any", "good"),
+                ("any", "ok"),
+            ]
+        )
+        # Only use labels for domains in embs (i.e. in the vocabulary)
+        labels = labels[labels["domain"].isin(vocab)]
+        labels = labels.reset_index()
+
+        labels = labels[["domain", "any"]]
+        labels = labels.to_numpy()[:, [0, 2]]  # take 'ok' column
+
+        sorter = np.argsort(labels[:, 0])
+        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
+        classes = labels[idx, 1]
+        queries = np.concatenate(
+            [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
+        )
+
     if group_hosts:
         queries = queries[
             np.argsort(queries[:, 0])
         ]  # Sort queries by host, preserving row structure
 
-    if model == "delm":  # output [queries - stride, seqlen, 2]
+    if model == "delm":  # output [queries - stride, seqlen, 2 or 3]
         actual_seqlen = seqlen - include_start
         seqs = np.empty(
-            shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2),
+            shape=(
+                (len(queries) - actual_seqlen) // stride + 1,
+                seqlen,
+                3 if include_class else 2,
+            ),
             dtype=object,
         )
         for i, _ in enumerate(seqs):
@@ -286,7 +336,7 @@ def indent(depth=1):
 
 
 def default_checkpoint(args):
-    return args.run_name
+    return f"{args.run_name}.h5"
 
 
 def main():
@@ -300,6 +350,9 @@ def main():
     domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
 
+    with open(domains_vocab_path, "r") as f:
+        domains_vocab = [l.strip() for l in f.readlines()]
+
     config_gpus(args)
 
     # Data Pipeline
@@ -309,10 +362,14 @@ def main():
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
+            vocab=domains_vocab,
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        output_signature=tf.TensorSpec(
+            shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
+        )
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
     )
@@ -322,10 +379,14 @@ def main():
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
+            vocab=domains_vocab,
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        output_signature=tf.TensorSpec(
+            shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
+        )
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
     )
@@ -385,11 +446,10 @@ def main():
         )
 
         logger.info(f"Calling model to initialize layers...")
-        # model(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-
-        # sample = np.array(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-        # logger.info(sample)
-        model.distributed_test_step(next(iter(test)))
+        if args.distribute:
+            model.distributed_test_step(next(iter(test)))
+        else:
+            model.test_step(next(iter(test)))
 
         try:
             model.load_weights(os.path.join(checkpoint_folder, checkpoint_name))
@@ -398,9 +458,14 @@ def main():
             )
         except Exception as e:
             logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint_name}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
+                f"{Fore.RED}Exception when trying to load checkpoint {os.path.join(checkpoint_folder, checkpoint_name)}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
             )
             checkpoint_name = default_checkpoint(args)
+
+    if args.finetune:  # freeze all layers but the classifier
+        model.finetune()
+    else:  # unfreeze in case it was frozen
+        model.pretrain()
 
     if args.demo:
         logger.info(
@@ -408,9 +473,6 @@ def main():
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
-
-        with open(domains_vocab_path, "r") as f:
-            domains_vocab = [l.strip() for l in f.readlines()]
 
         seq = (
             train.unbatch()
@@ -454,7 +516,6 @@ def main():
         pred = pred[0]
 
         for i in range(len(pred)):
-
             masked_host = masked_seq[0, i, 0]
             if type(masked_host) is bytes:
                 masked_host = masked_host.decode("utf-8")
@@ -542,7 +603,10 @@ def main():
     )
 
     logger.debug("Starting model evaluation...")
-    model.evaluate(x=test, y=None, batch_size=args.bs)
+    if not args.distribute:
+        model.evaluate(x=test, y=None, batch_size=args.bs)
+    else:  # TODO evaluate() non si può usare con DistributedDataset
+        pass
     logger.debug("Model evaluation completed.")
 
 

@@ -221,7 +221,7 @@ class DELM(tf.keras.Model):
         )
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
-
+        self._logger.critical(self.domains_lookup.get_vocabulary())
         # Tokens Embeddings
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,

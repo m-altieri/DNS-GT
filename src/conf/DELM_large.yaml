@@ -6,5 +6,4 @@ mask_p:
     same: 0.01
     random: 0.01
 n_heads: 16
-mask_test: true
 quick_tb: false

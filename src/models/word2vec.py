@@ -33,6 +33,7 @@ class Word2Vec(tf.keras.Model):
             if conf[key] is not None:
                 self.conf[key] = conf[key]
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
+        self.frozen = False
 
         # TensorBoard Init
         TB_FOLDER = "tensorboard"
@@ -50,6 +51,7 @@ class Word2Vec(tf.keras.Model):
             self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
+        # Layers
         self.domain_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.conf["domains_vocab_path"], num_oov_indices=0
         )
@@ -58,9 +60,23 @@ class Word2Vec(tf.keras.Model):
             input_dim=self.ndomains,
             output_dim=self.conf["dim"],
         )
-
         self.hidden = tf.keras.layers.Dense(self.conf["dim"], activation=None)
         self.out = tf.keras.layers.Dense(self.ndomains)
+        self.classifier = tf.keras.layers.Dense(1, activation="sigmoid")
+
+    def pretrain(self):
+        self.domain_embeddings.trainable = True
+        self.hidden.trainable = True
+        self.out.trainable = True
+        self.classifier.trainable = False
+        self.frozen = False
+
+    def finetune(self):
+        self.domain_embeddings.trainable = False
+        self.hidden.trainable = False
+        self.out.trainable = False
+        self.classifier.trainable = True
+        self.frozen = True
 
     @tf.function
     def call(self, inputs):
@@ -72,16 +88,16 @@ class Word2Vec(tf.keras.Model):
         if self.conf["type"] == "CBOW":  # for CBOW, x is the context, y is the target
             context_emb = tf.math.reduce_sum(context_embs, axis=1)
             hidden = self.hidden(context_emb)
-            out = self.out(hidden)
-            out = tf.nn.softmax(out)
         elif (
             self.conf["type"] == "SkipGram"
         ):  # for SkipGram, x is the target, y is the context
             hidden = self.hidden(target_embs)
-            out = self.out(hidden)
-            out = tf.nn.softmax(out)
 
-        return out
+        out = self.out(hidden)
+        out = tf.nn.softmax(out)
+        c = self.classifier(hidden)
+
+        return out if not self.frozen else c
 
     def train_step(self, seq):
         # seq: [B,L]

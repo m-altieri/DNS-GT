@@ -1,18 +1,18 @@
+import os
 import sys
-import os
-import tensorflow as tf
-import numpy as np
-import argparse
-from models import DELM, Word2Vec
 import time
-import os
-from tqdm.keras import TqdmCallback
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
 import logging
-from colorama import Fore, Style
-from utils.distribute import DummyStrategy
-from tqdm import tqdm
+import argparse
+import numpy as np
 import pandas as pd
+from tqdm import tqdm
+from colorama import Fore, Style
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
+import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+from models import DELM, Word2Vec
+from utils.distribute import DummyStrategy
 
 
 def config_gpus(args):
@@ -23,9 +23,9 @@ def config_gpus(args):
     for device in tf.config.get_visible_devices("GPU"):
         try:
             tf.config.experimental.set_memory_growth(device, True)
-        except:
+        except Exception as e:
             print("Cannot enable memory growth on device:", device)
-            sys.exit(1)
+            sys.exit(e)
 
 
 def get_logger(verbose=False):
@@ -38,12 +38,21 @@ def get_logger(verbose=False):
 
 
 def build_model(model, args, **kwargs):
+    loss_reduction = tf.keras.losses.Reduction.NONE if args.distribute else "auto"
+    loss = (
+        tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=False, reduction=loss_reduction
+        )
+        if not args.finetune
+        else tf.keras.losses.BinaryCrossentropy(
+            from_logits=False, reduction=loss_reduction
+        )
+    )
     with kwargs["dist_strategy"].scope():
         if model.lower() == "delm":
             model = DELM(
                 seqlen=args.seqlen,
                 blocks=args.blocks,
-                mask_test=args.mask_test,
                 tensorboard=args.tensorboard,
                 quick_tb=args.quick_tb,
                 run_name=args.run_name,
@@ -53,24 +62,6 @@ def build_model(model, args, **kwargs):
                 bs=args.bs,
                 dist_strategy=kwargs["dist_strategy"],
             )
-            loss_reduction = (
-                tf.keras.losses.Reduction.NONE if args.distribute else "auto"
-            )
-            loss = (
-                tf.keras.losses.SparseCategoricalCrossentropy(
-                    from_logits=False, reduction=loss_reduction
-                )
-                if not args.finetune
-                else tf.keras.losses.BinaryCrossentropy(
-                    from_logits=False, reduction=loss_reduction
-                )
-            )
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-                loss=loss,
-                metrics=[],
-                run_eagerly=args.eager,
-            )
         elif model.lower() == "w2v":
             model = Word2Vec(
                 type=args.type,
@@ -79,12 +70,12 @@ def build_model(model, args, **kwargs):
                 quick_tb=args.quick_tb,
                 run_name=args.run_name,
             )
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-                loss=loss,
-                metrics=[],
-                run_eagerly=args.eager,
-            )
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+            loss=loss,
+            metrics=[],
+            run_eagerly=args.eager,
+        )
         return model
 
 
@@ -166,7 +157,7 @@ def parse_args():
         + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "  # TODO
         + "If it is `all`, distribute on all GPUs.",
     )
-    argparser.add_argument("--tensorboard", action="store_true")
+    argparser.add_argument("--tensorboard", "--tb", action="store_true")
     argparser.add_argument(
         "--quick-tb",
         action="store_true",
@@ -179,6 +170,7 @@ def parse_args():
         "--run-name",
         action="store",
         default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
+        help="Name used when saving to file. Has no effect if --load.",
     )
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
     argparser.add_argument("--shuffle", action="store_true")
@@ -196,8 +188,16 @@ def parse_args():
     )
     argparser.add_argument(
         "--finetune",
+        "--ft",
         action="store_true",
         help="Freeze all layers and use the classification workflow instead of the embedding learning workflow.",
+    )
+    argparser.add_argument(
+        "--from-pretrained",
+        "--from-pt",
+        action="store_true",
+        help="Whether to load weights from existing finetuned model or from pretrained model. "
+        + "Only has effect if --finetune.",
     )
 
     args = argparser.parse_args()
@@ -221,7 +221,6 @@ def parse_args():
     else:
         args.distribute = False
 
-    args.mask_test = not args.demo
     if args.demo:
         args.eager = True
         args.tensorboard = True
@@ -331,8 +330,8 @@ def create_sequences(
             seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
 
     elif model == "w2v":  # output [queries, seqlen]
-        seqs = np.array(Word2Vec.create_pairs(queries[:, 1], seqlen))
-
+        seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], seqlen))
+        print(seqs)
     else:
         raise ValueError("Specify model to create sequences.")
 
@@ -351,12 +350,12 @@ def find_last_checkpoint(dir="checkpoints"):
     return checkpoint
 
 
-def indent(depth=1):
-    return f"".join(["--" for i in range(depth - 1)]) + "> "
-
-
 def default_checkpoint(args):
     return f"{args.run_name}.h5"
+
+
+def indent(depth=1):
+    return f"".join(["--" for i in range(depth - 1)]) + "> "
 
 
 def main():
@@ -373,6 +372,7 @@ def main():
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
 
+    # config_tf(args)
     config_gpus(args)
 
     # Data Pipeline
@@ -389,10 +389,10 @@ def main():
             tiny_amount=args.tiny,
         ),
         output_signature=tf.TensorSpec(
-            shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
+            shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
         )
         if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
+        else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
@@ -407,10 +407,10 @@ def main():
             tiny_amount=args.tiny,
         ),
         output_signature=tf.TensorSpec(
-            shape=(args.seqlen, 3 if args.finetune else 2), dtype=tf.string
+            shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
         )
         if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
+        else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
     if not args.demo and args.shuffle:
         train = train.shuffle(1000000)
@@ -420,7 +420,6 @@ def main():
     # Distribution
     dist_strategy = None
     if args.distribute:
-        # Strategy config
         gpus = (
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
         )  # setting None uses all gpus
@@ -447,6 +446,10 @@ def main():
         args,
         dist_strategy=dist_strategy,
     )
+    if args.finetune:  # freeze all layers but the last classification layer
+        model.finetune()
+    else:  # unfreeze in case it was frozen
+        model.pretrain()
 
     # Manage checkpoint
     if not os.path.exists("checkpoints"):
@@ -456,18 +459,20 @@ def main():
     )
     if not os.path.exists(checkpoint_folder):
         os.makedirs(checkpoint_folder)
-
     checkpoint_name = default_checkpoint(args)
 
+    # Load saved weights if --load
     if args.load:
         checkpoint_name = (
             find_last_checkpoint(dir=checkpoint_folder)
             if args.load == "last"
             else args.load
         )
-        logger.debug(
-            f"Trying to load model weights from {os.path.join(checkpoint_folder, checkpoint_name)}..."
+        load_weights_path = os.path.join(
+            checkpoint_folder,
+            f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * (args.finetune and not args.from_pretrained)}.h5",
         )
+        logger.info(f"Trying to load weights from {load_weights_path}...")
 
         logger.info(f"Calling model to initialize layers...")
         if args.distribute:
@@ -476,46 +481,36 @@ def main():
             model.test_step(next(iter(test)))
 
         try:
-            logger.info(
-                f"Trying to load weights from {os.path.join(checkpoint_folder, checkpoint_name)}..."
-            )
             with dist_strategy.scope():  # not sure if the scope is needed
                 model.load_weights(
-                    os.path.join(checkpoint_folder, checkpoint_name),
+                    load_weights_path,
                     skip_mismatch=True,
                     by_name=True,
                 )
-            logger.info(
-                f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
-            )
+            logger.info(f"Model weights loaded from {load_weights_path}.")
         except Exception as e:
             logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {os.path.join(checkpoint_folder, checkpoint_name)}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
+                f"{Fore.RED}Exception when trying to load checkpoint {load_weights_path}:\n{Style.DIM}{e}"
+                + f"\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
             )
             checkpoint_name = default_checkpoint(args)
 
-    if args.finetune:  # freeze all layers but the classifier
-        model.finetune()
-    else:  # unfreeze in case it was frozen
-        model.pretrain()
-
     if args.demo:
         logger.info(
-            f"{Style.BRIGHT}\nDomain Embeddings Language Model v0.1{Style.RESET_ALL}\n"
+            f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
-
         seq = (
             train.unbatch()
             .skip(args.test_seq or np.random.randint(0, 1000))
-            .take(10)
+            .take(1)
             .as_numpy_iterator()
         )
         seq = np.array([s for s in seq], dtype=object)
-        print(seq)
+
         # uncomment this assignment to manually create a sequence
-        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern in the training data
+        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern found in the training data
         # seq = np.array(
         #     [
         #         [
@@ -539,12 +534,15 @@ def main():
         # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
         # example: mask[0, 1, 1]
         #   always zero ^  ^  ^
-        #      first token |  |
+        #     second token |  |
         #                     | domain
+        mask[0, 1, 1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
         pred, loss = model._predict(seq, mask)
+        print(loss)
+        print(np.shape(loss))
         pred = pred[0]
 
         for i in range(len(pred)):
@@ -565,9 +563,17 @@ def main():
             )
 
         logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
-        logger.info(model.summary())
 
         sys.exit(0)
+
+    if args.verbose:
+        logger.info(model.summary())
+
+    # Save model weights
+    save_weights_path = os.path.join(
+        checkpoint_folder,
+        f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * args.finetune}.h5",
+    )
 
     logger.debug("Starting model training...")
     if not args.distribute:
@@ -580,7 +586,7 @@ def main():
             epochs=args.epochs,
             callbacks=[
                 ModelCheckpoint(
-                    os.path.join(checkpoint_folder, checkpoint_name),
+                    save_weights_path,
                     monitor="loss",
                     save_weights_only=True,
                 ),
@@ -594,14 +600,11 @@ def main():
                 train,
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
             )
-
             # Train loop
             for x in pbar:
                 total_loss += model.distributed_train_step(x)
                 num_batches += 1
-                pbar.set_description(f"Loss: {total_loss / num_batches:.4f}")
-            train_loss = total_loss / num_batches
-
+                pbar.set_description(f"Train Loss: {total_loss / num_batches:.4f}")
             # Test loop
             for x in test:
                 total_loss += model.distributed_test_step(x)
@@ -610,14 +613,12 @@ def main():
 
             # Save model weights
             with dist_strategy.scope():
-                model.save_weights(os.path.join(checkpoint_folder, checkpoint_name))
+                model.save_weights(save_weights_path)
 
     logger.debug(f"Model training completed.")
 
     with dist_strategy.scope():  # not sure if the scope is needed
-        model.save_weights(
-            os.path.join(checkpoint_folder, checkpoint_name)
-        )  # Save model weights
+        model.save_weights(save_weights_path)
 
     # Save embeddings
     if not os.path.exists("embeddings"):
@@ -641,7 +642,7 @@ def main():
     logger.debug("Starting model evaluation...")
     if not args.distribute:
         model.evaluate(x=test, y=None, batch_size=args.bs)
-    else:  # TODO evaluate() non si può usare con DistributedDataset
+    else:  # TODO evaluate can't be used with DistributedDataset, have to loop manually
         pass
     logger.debug("Model evaluation completed.")
 

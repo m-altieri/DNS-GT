@@ -1,4 +1,4 @@
-dim: 512
+dim: 128
 domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
 hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
 # Try starting with a higher "same" probability
@@ -12,7 +12,6 @@ mask_p:
     same: 0.01
     random: 0.01
 n_heads: 8
-mask_test: true
-omega: 1.0
-blocks: 2
+omega: 0.75
+blocks: 4
 quick_tb: false

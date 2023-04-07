@@ -199,6 +199,7 @@ def parse_args():
         help="Whether to load weights from existing finetuned model or from pretrained model. "
         + "Only has effect if --finetune.",
     )
+    argparser.add_argument("--max-tokens", action="store", type=int)
 
     args = argparser.parse_args()
 

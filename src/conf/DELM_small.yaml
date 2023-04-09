@@ -1,6 +1,6 @@
 dim: 128
-domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
-hosts_vocab_path: 'preprocessing/vocabs/small/hosts_vocab.txt'
+domains_vocab_path: 'preprocessing/vocabs/small/exp/domains_vocab.txt'
+hosts_vocab_path: 'preprocessing/vocabs/small/exp/hosts_vocab.txt'
 # Try starting with a higher "same" probability
 # and lowering it gradually in favor of "mask" probability
 # mask_p:

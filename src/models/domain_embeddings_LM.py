@@ -138,7 +138,7 @@ class DELM(tf.keras.Model):
         self.binary_classifier.trainable = True
         self.frozen = True
 
-    def __init__(self, **conf):
+    def __init__(self, conf):
         super(DELM, self).__init__()
 
         # Logger
@@ -196,32 +196,52 @@ class DELM(tf.keras.Model):
         #     type="binary", normalize=False, tb_writer=self.tb_writer
         # )
 
+        self.hosts_vocabulary = (
+            open(self.conf.get("hosts_vocab_path", "r")).read().split("\n")
+        )
+        self.domains_vocabulary = (
+            open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
+        )
+        if self.conf.get(
+            "max_tokens"
+        ):  # NOTE now I am trimming both hosts and domains to max_tokens;
+            # in theory hosts are a lot less problematic and could be left untrimmed
+            self.hosts_vocabulary = self.hosts_vocabulary[: self.conf.get("max_tokens")]
+            self.domains_vocabulary = self.domains_vocabulary[
+                : self.conf.get("max_tokens")
+            ]
+
+        self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
+        self.domains_vocabulary = tf.constant(self.domains_vocabulary)
+
         # Token Indexes Lookup
         self.domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["domains_vocab_path"],
+            vocabulary=self.domains_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
-            max_tokens=self.conf.get("max_tokens"),
+            # TODO now the [UNK] token is automatically added to the vocabulary by StringLookup when num_oov_indices=1;
+            # but I already have the <UNK> token in the vocabulary. I should remove <UNK> from the vocabulary generating script,
+            # and using the oov_token="<UNK>" parameter for StringLoopkup, to have a consistent format with the other special tokens.
+            # also, I should probably just set num_oov_indices=1 and remove <UNK> from the vocabulary altogether.
         )
         self.inverse_domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["domains_vocab_path"],
+            vocabulary=self.domains_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
             invert=True,
-            max_tokens=self.conf.get("max_tokens"),
         )
         self.hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["hosts_vocab_path"],
+            vocabulary=self.hosts_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
-            max_tokens=self.conf.get("max_tokens"),
         )
         self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["hosts_vocab_path"],
+            vocabulary=self.hosts_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
             invert=True,
-            max_tokens=self.conf.get("max_tokens"),
         )
+        self._logger.critical(self.domains_lookup.vocabulary_size())
+        self._logger.critical(self.domains_lookup.get_vocabulary())
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
-        self._logger.critical(self.domains_lookup.get_vocabulary())
+
         # Tokens Embeddings
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,

@@ -50,18 +50,17 @@ def build_model(model, args, **kwargs):
     )
     with kwargs["dist_strategy"].scope():
         if model.lower() == "delm":
-            model = DELM(
-                seqlen=args.seqlen,
-                blocks=args.blocks,
-                tensorboard=args.tensorboard,
-                quick_tb=args.quick_tb,
-                run_name=args.run_name,
-                omega=args.omega,
-                version=args.version,
-                dim=args.dim,
-                bs=args.bs,
-                dist_strategy=kwargs["dist_strategy"],
-            )
+            model = DELM(vars(args) | kwargs)
+            # seqlen=args.seqlen,
+            # blocks=args.blocks,
+            # tensorboard=args.tensorboard,
+            # quick_tb=args.quick_tb,
+            # run_name=args.run_name,
+            # omega=args.omega,
+            # version=args.version,
+            # dim=args.dim,
+            # bs=args.bs,
+            # dist_strategy=kwargs["dist_strategy"],
         elif model.lower() == "w2v":
             model = Word2Vec(
                 type=args.type,
@@ -373,6 +372,11 @@ def main():
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
 
+    # if args.max_tokens:  # truncate vocabulary to --max-tokens
+    #     domains_vocab = domains_vocab[
+    #         : min(len(domains_vocab), args.max_tokens)
+    #     ]  # TODO finchè gli dai il path al modello, puoi troncare quanto vuoi, lui andrà sempre a caricare il vocab dal file direttamente. bisogna o creare un vocab file troncato a runtime e dare quello, o caricare il vocab come tensore/array e usaare adapt()
+
     # config_tf(args)
     config_gpus(args)
 
@@ -542,12 +546,18 @@ def main():
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
         pred, loss = model._predict(seq, mask)
-        print(loss)
-        print(np.shape(loss))
         pred = pred[0]
+        print(pred)
+        print(model.domains_lookup(masked_seq[0, 0, 1]))
+        print(model.inverse_domains_lookup(model.domains_lookup(masked_seq[0, 0, 1])))
 
         for i in range(len(pred)):
             masked_host = masked_seq[0, i, 0]
+
+            masked_host = model.inverse_hosts_lookup(
+                model.hosts_lookup(masked_host)
+            )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
+
             if type(masked_host) is bytes:
                 masked_host = masked_host.decode("utf-8")
             domain = seq[0, i, 1]
@@ -557,8 +567,16 @@ def main():
             if type(masked_domain) is bytes:
                 masked_domain = masked_domain.decode("utf-8")
 
-            predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
-            domain_index = domains_vocab.index(domain)
+            masked_domain = model.inverse_domains_lookup(
+                model.domains_lookup(masked_domain)
+            )
+
+            # predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
+            # domain_index = domains_vocab.index(domain)
+            predicted_token = model.inverse_domains_lookup(
+                np.array(pred).argmax(axis=-1)[i]
+            )
+            domain_index = model.domains_lookup(domain)
             logger.info(
                 f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
             )

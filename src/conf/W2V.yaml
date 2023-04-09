@@ -1,2 +1,2 @@
 dim: 128
-domains_vocab_path: 'preprocessing/vocabs/small/domains_vocab.txt'
+domains_vocab_path: 'preprocessing/vocabs/small/exp/domains_vocab.txt'

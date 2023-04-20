@@ -6,10 +6,11 @@ import numpy as np
 import logging
 import os
 from datetime import datetime
+from utils.distribute import DummyStrategy
 
 
 class Word2Vec(tf.keras.Model):
-    def __init__(self, **conf):
+    def __init__(self, conf):
         super(Word2Vec, self).__init__()
 
         # Logger
@@ -35,6 +36,14 @@ class Word2Vec(tf.keras.Model):
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
         self.frozen = False
 
+        # Distribution
+        self.dist_strategy = self.conf.get("dist_strategy", DummyStrategy)
+        self.distributed = self.dist_strategy is not DummyStrategy
+        if self.distributed:
+            self._logger.info(
+                f"Initializing model with distribution strategy: {self.dist_strategy}"
+            )
+
         # TensorBoard Init
         TB_FOLDER = "tensorboard"
         self.tb_path = None
@@ -51,10 +60,32 @@ class Word2Vec(tf.keras.Model):
             self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
-        # Layers
-        self.domain_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["domains_vocab_path"], num_oov_indices=0
+        # <--- TODO this is copied; make it external
+        self.domains_vocabulary = (
+            open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
         )
+        if self.conf.get("max_tokens"):
+            self.domains_vocabulary = self.domains_vocabulary[
+                : self.conf.get("max_tokens")
+            ]
+            self._logger.critical(
+                f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
+            )
+
+        self.domains_vocabulary = tf.constant(self.domains_vocabulary)
+
+        # Token Indexes Lookup
+        self.domain_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.domains_vocabulary,
+            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            # TODO now the [UNK] token is automatically added to the vocabulary by StringLookup when num_oov_indices=1;
+            # but I already have the <UNK> token in the vocabulary. I should remove <UNK> from the vocabulary generating script,
+            # and using the oov_token="<UNK>" parameter for StringLoopkup, to have a consistent format with the other special tokens.
+            # also, I should probably just set num_oov_indices=1 and remove <UNK> from the vocabulary altogether.
+        )
+        # --->
+
+        # Layers
         self.ndomains = self.domain_lookup.vocabulary_size()
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,
@@ -71,10 +102,10 @@ class Word2Vec(tf.keras.Model):
         self.classifier.trainable = False
         self.frozen = False
 
-    def finetune(self):
-        self.domain_embeddings.trainable = False
-        self.hidden.trainable = False
-        self.out.trainable = False
+    def finetune(self, freeze_weights=True):
+        self.domain_embeddings.trainable = not freeze_weights
+        self.hidden.trainable = not freeze_weights
+        self.out.trainable = not freeze_weights
         self.classifier.trainable = True
         self.frozen = True
 
@@ -99,12 +130,24 @@ class Word2Vec(tf.keras.Model):
 
         return out if not self.frozen else c
 
-    def train_step(self, seq):
-        # seq: [B,L]
-        L = tf.shape(seq)[-1]
+    @tf.function
+    def distributed_train_step(self, seq):
+        loss = self.dist_strategy.run(self.train_step, args=(seq,))
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
-        target_domains = seq[:, L // 2]
-        context_domains = tf.concat([seq[:, : L // 2], seq[:, L // 2 + 1 :]], axis=-1)
+    @tf.function
+    def distributed_test_step(self, seq):
+        loss = self.dist_strategy.run(self.test_step, args=(seq,))
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+
+    def train_step(self, seq):
+        # seq: [B,L,1] or [B,L,2] se --ft
+        L = tf.shape(seq)[1]
+
+        target_domains = seq[:, L // 2, 0]
+        context_domains = tf.concat(
+            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+        )
 
         target_indexes = self.domain_lookup(target_domains)
         context_indexes = self.domain_lookup(context_domains)
@@ -113,12 +156,21 @@ class Word2Vec(tf.keras.Model):
             pred = self((target_indexes, context_indexes), training=True)  # [B,vsize]
 
             if self.conf["type"] == "CBOW":
+                label = (
+                    target_indexes
+                    if not self.frozen
+                    else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
+                )
+                self._logger.critical(label)
+                self._logger.critical(pred)
                 loss = self.compiled_loss(
-                    target_indexes,
+                    label,
                     pred,
                     regularization_losses=self.losses,
                 )
-            elif self.conf["type"] == "SkipGram":
+            elif (
+                self.conf["type"] == "SkipGram"
+            ):  # TODO finetuning is still not implemented on SkipGram
                 loss = tf.reduce_mean(
                     tf.map_fn(
                         lambda e: self.compiled_loss(
@@ -130,8 +182,14 @@ class Word2Vec(tf.keras.Model):
                     axis=-1,
                 )  # [B]
 
-        with self.tb_writer.as_default():
-            tf.summary.scalar("train_loss", loss, step=self.step)
+            if self.distributed:
+                loss = tf.math.divide(
+                    tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+                )
+
+        if self.conf.get("tensorboard"):
+            with self.tb_writer.as_default():
+                tf.summary.scalar("train_loss", loss, step=self.step)
 
         # Compute gradients and update weights
         trainable_variables = self.trainable_variables
@@ -143,13 +201,16 @@ class Word2Vec(tf.keras.Model):
         self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
     def test_step(self, seq):
-        L = tf.shape(seq)[-1]
+        # seq: [B,L,1] or [B,L,2] se --ft
+        L = tf.shape(seq)[1]
 
-        target_domains = seq[:, L // 2]
-        context_domains = tf.concat([seq[:, : L // 2], seq[:, L // 2 + 1 :]], axis=-1)
+        target_domains = seq[:, L // 2, 0]
+        context_domains = tf.concat(
+            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+        )
 
         target_indexes = self.domain_lookup(target_domains)
         context_indexes = self.domain_lookup(context_domains)
@@ -157,8 +218,13 @@ class Word2Vec(tf.keras.Model):
         pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
 
         if self.conf["type"] == "CBOW":
+            label = (
+                target_indexes
+                if not self.frozen
+                else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
+            )
             loss = self.compiled_loss(
-                target_indexes,
+                label,
                 pred,
                 regularization_losses=self.losses,
             )
@@ -174,11 +240,17 @@ class Word2Vec(tf.keras.Model):
                 axis=-1,
             )  # [B]
 
-        with self.tb_writer.as_default():
-            tf.summary.scalar("val_loss", loss, step=self.step)
+        if self.distributed:
+            loss = tf.math.divide(
+                tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+            )
+
+        if self.conf.get("tensorboard"):
+            with self.tb_writer.as_default():
+                tf.summary.scalar("val_loss", loss, step=self.step)
 
         # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
     @staticmethod
     def create_pairs(seq, seqlen):

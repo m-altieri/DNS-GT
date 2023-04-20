@@ -165,6 +165,8 @@ class DELM(tf.keras.Model):
         for key in conf:
             if conf[key] is not None:
                 self.conf[key] = conf[key]
+
+        # Distribution
         if "dist_strategy" in self.conf:
             self.dist_strategy = self.conf["dist_strategy"]
             self.distributed = self.dist_strategy is not DummyStrategy
@@ -172,6 +174,7 @@ class DELM(tf.keras.Model):
             self._logger.info(
                 f"Initializing model with distribution strategy: {self.dist_strategy}"
             )
+
         self.frozen = False
         self.initialize = True  # NOTE if this is a tf.Variable(True), and i modify it with .assign(), the weights won't save
 
@@ -197,7 +200,7 @@ class DELM(tf.keras.Model):
         # )
 
         self.hosts_vocabulary = (
-            open(self.conf.get("hosts_vocab_path", "r")).read().split("\n")
+            open(self.conf.get("hosts_vocab_path"), "r").read().split("\n")
         )
         self.domains_vocabulary = (
             open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
@@ -210,6 +213,9 @@ class DELM(tf.keras.Model):
             self.domains_vocabulary = self.domains_vocabulary[
                 : self.conf.get("max_tokens")
             ]
+            self._logger.critical(
+                f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
+            )
 
         self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
         self.domains_vocabulary = tf.constant(self.domains_vocabulary)
@@ -237,8 +243,6 @@ class DELM(tf.keras.Model):
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
             invert=True,
         )
-        self._logger.critical(self.domains_lookup.vocabulary_size())
-        self._logger.critical(self.domains_lookup.get_vocabulary())
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
 

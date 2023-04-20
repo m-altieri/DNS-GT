@@ -63,11 +63,13 @@ def build_model(model, args, **kwargs):
             # dist_strategy=kwargs["dist_strategy"],
         elif model.lower() == "w2v":
             model = Word2Vec(
-                type=args.type,
-                dim=args.dim,
-                tensorboard=args.tensorboard,
-                quick_tb=args.quick_tb,
-                run_name=args.run_name,
+                vars(args)
+                | kwargs
+                # type=args.type,
+                # dim=args.dim,
+                # tensorboard=args.tensorboard,
+                # quick_tb=args.quick_tb,
+                # run_name=args.run_name,
             )
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
@@ -80,6 +82,7 @@ def build_model(model, args, **kwargs):
 
 def parse_args():
     argparser = argparse.ArgumentParser()
+    argparser.add_argument("model", action="store", default="DELM")
     argparser.add_argument(
         "--es",
         action="store_true",
@@ -106,7 +109,7 @@ def parse_args():
         help="Number of training epochs",
     )
     argparser.add_argument(
-        "--bs", action="store", default=256, type=int, help="Batch size"
+        "--bs", action="store", default=512, type=int, help="Batch size"
     )
     argparser.add_argument(
         "--lr", action="store", default=1e-4, type=float, help="Learning rate"
@@ -173,7 +176,6 @@ def parse_args():
     )
     argparser.add_argument("--omega", action="store", type=float, default=0.8)
     argparser.add_argument("--shuffle", action="store_true")
-    argparser.add_argument("model", action="store", default="DELM")
     argparser.add_argument(
         "--type",
         action="store",
@@ -224,6 +226,8 @@ def parse_args():
     if args.demo:
         args.eager = True
         args.tensorboard = True
+        args.gpu = None
+        args.distribute = False
     return args
 
 
@@ -331,7 +335,6 @@ def create_sequences(
 
     elif model == "w2v":  # output [queries, seqlen]
         seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], seqlen))
-        print(seqs)
     else:
         raise ValueError("Specify model to create sequences.")
 
@@ -399,6 +402,7 @@ def main():
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
+    print(list(train.take(1).as_numpy_iterator()))
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "test"),
@@ -429,7 +433,7 @@ def main():
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
         )  # setting None uses all gpus
         dist_strategy = tf.distribute.MirroredStrategy(gpus)
-        print(
+        logger.warning(
             f"{Fore.YELLOW}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
         )
 
@@ -452,7 +456,7 @@ def main():
         dist_strategy=dist_strategy,
     )
     if args.finetune:  # freeze all layers but the last classification layer
-        model.finetune()
+        model.finetune(freeze_weights=False)
     else:  # unfreeze in case it was frozen
         model.pretrain()
 
@@ -541,35 +545,29 @@ def main():
         #   always zero ^  ^  ^
         #     second token |  |
         #                     | domain
-        mask[0, 1, 1] = 1
+        mask[0, 1, -1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
         pred, loss = model._predict(seq, mask)
         pred = pred[0]
-        print(pred)
-        print(model.domains_lookup(masked_seq[0, 0, 1]))
-        print(model.inverse_domains_lookup(model.domains_lookup(masked_seq[0, 0, 1])))
 
         for i in range(len(pred)):
-            masked_host = masked_seq[0, i, 0]
-
             masked_host = model.inverse_hosts_lookup(
-                model.hosts_lookup(masked_host)
+                model.hosts_lookup(masked_seq[0, i, 0])
             )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
-
             if type(masked_host) is bytes:
                 masked_host = masked_host.decode("utf-8")
-            domain = seq[0, i, 1]
+
+            domain = model.inverse_domains_lookup(model.domains_lookup(seq[0, i, 1]))
             if type(domain) is bytes:
                 domain = domain.decode("utf-8")
-            masked_domain = masked_seq[0, i, 1]
-            if type(masked_domain) is bytes:
-                masked_domain = masked_domain.decode("utf-8")
 
             masked_domain = model.inverse_domains_lookup(
-                model.domains_lookup(masked_domain)
+                model.domains_lookup(masked_seq[0, i, 1])
             )
+            if type(masked_domain) is bytes:
+                masked_domain = masked_domain.decode("utf-8")
 
             # predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
             # domain_index = domains_vocab.index(domain)
@@ -612,27 +610,33 @@ def main():
             ],
         )
     else:  # if args.distribute
+        num_batches = None
         for epoch in range(args.epochs):
             total_loss = 0.0
-            num_batches = 0
             pbar = tqdm(
                 train,
+                # total=num_batches,
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
             )
+            logger.warning("1")
             # Train loop
+            current_batch = 0
             for x in pbar:
+                logger.warning("2")
                 total_loss += model.distributed_train_step(x)
-                num_batches += 1
-                pbar.set_description(f"Train Loss: {total_loss / num_batches:.4f}")
+                current_batch += 1
+                pbar.set_description(f"Train Loss: {total_loss / current_batch:.4f}")
+
             # Test loop
             for x in test:
                 total_loss += model.distributed_test_step(x)
-                num_batches += 1
-            logger.info(f"Test Loss: {total_loss / num_batches:.4f}")
+            logger.info(f"Test Loss: {total_loss / current_batch:.4f}")
 
             # Save model weights
             with dist_strategy.scope():
                 model.save_weights(save_weights_path)
+
+            num_batches = current_batch
 
     logger.debug(f"Model training completed.")
 

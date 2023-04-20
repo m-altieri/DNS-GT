@@ -1,7 +1,6 @@
 <START>
 <PAD>
 <MASK>
-<UNK>
 graph.facebook.com
 edge-mqtt.facebook.com
 international-gfe.download.nvidia.com

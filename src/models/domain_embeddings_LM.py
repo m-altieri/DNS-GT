@@ -568,7 +568,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         )  # dall'eq. (2) di Vaswani sembra che questo linear1 non ci sia
         self.nonlinear = tf.keras.layers.Dense(
             self.emb_dim * self.nonlinear_stretch,
-            activation="relu",
+            activation=tf.keras.activations.gelu,
         )
         self.linear2 = tf.keras.layers.Dense(
             self.emb_dim,
@@ -601,9 +601,6 @@ class MHGAT_Block(tf.keras.layers.Layer):
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
         )  # [B, n_heads, L, L] (normalization)
 
-        # tf.print(scores[:, 7])
-        # tf.print(tf.math.reduce_max(scores[:, 7]))
-        # tf.print(tf.math.reduce_min(scores[:, 7]))
         self.tb_log_image(f"MHGAT{self.block_id}/7", scores[:, 7], step=0, minmax=True)
 
         # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
@@ -617,9 +614,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         scores = self.softmax(
             scores, mask=adj_h
         )  # [B, n_heads, L, L] attention weights
-        # tf.print(scores[:, 7], summarize=-1)
-        # tf.print(tf.math.reduce_max(scores[:, 7]))
-        # tf.print(tf.math.reduce_min(scores[:, 7]))
+
         self.tb_log_image(
             f"MHGAT{self.block_id}/7-after-softmax", scores[:, 7], step=0, minmax=True
         )

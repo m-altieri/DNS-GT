@@ -166,7 +166,7 @@ def parse_args():
         help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
     )
     argparser.add_argument("--eager", action="store_true")
-    argparser.add_argument("--blocks", action="store", type=int, default=4)
+    argparser.add_argument("--blocks", action="store", type=int)
     argparser.add_argument("--group-hosts", action="store_true", default=True)
     argparser.add_argument(
         "--run-name",
@@ -174,7 +174,7 @@ def parse_args():
         default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
         help="Name used when saving to file. Has no effect if --load.",
     )
-    argparser.add_argument("--omega", action="store", type=float, default=0.8)
+    argparser.add_argument("--omega", action="store", type=float)
     argparser.add_argument("--shuffle", action="store_true")
     argparser.add_argument(
         "--type",
@@ -274,7 +274,6 @@ def create_sequences(
 ):
 
     queries = np.load(input_file, allow_pickle=True)
-
     if tiny_amount:
         queries = queries[:10000]
 
@@ -368,7 +367,8 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    queries_path = f"preprocessing/arrays/{args.version}/queries/"
+    queries_path = f"/mnt/storage15/TI-2016-preprocessed/arrays/{args.version}/queries"
+    # preprocessing/arrays/{args.version}/queries/"
     domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
 
@@ -402,7 +402,6 @@ def main():
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
-    print(list(train.take(1).as_numpy_iterator()))
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "test"),
@@ -431,7 +430,7 @@ def main():
     if args.distribute:
         gpus = (
             [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
-        )  # setting None uses all gpus
+        )  # initializing MirroredStrategy with None uses all gpus
         dist_strategy = tf.distribute.MirroredStrategy(gpus)
         logger.warning(
             f"{Fore.YELLOW}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
@@ -470,8 +469,13 @@ def main():
         os.makedirs(checkpoint_folder)
     checkpoint_name = default_checkpoint(args)
 
-    # Load saved weights if --load
-    if args.load:
+    logger.info(f"Calling model to initialize layers...")
+    if args.distribute:
+        model.distributed_test_step(next(iter(test)))
+    else:
+        model.test_step(next(iter(test)))
+
+    if args.load:  # load saved weights if --load
         checkpoint_name = (
             find_last_checkpoint(dir=checkpoint_folder)
             if args.load == "last"
@@ -481,19 +485,13 @@ def main():
             checkpoint_folder,
             f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * (args.finetune and not args.from_pretrained)}.h5",
         )
+
         logger.info(f"Trying to load weights from {load_weights_path}...")
-
-        logger.info(f"Calling model to initialize layers...")
-        if args.distribute:
-            model.distributed_test_step(next(iter(test)))
-        else:
-            model.test_step(next(iter(test)))
-
         try:
             with dist_strategy.scope():  # not sure if the scope is needed
                 model.load_weights(
                     load_weights_path,
-                    skip_mismatch=True,
+                    skip_mismatch=False,  # let's try false, it was true
                     by_name=True,
                 )
             logger.info(f"Model weights loaded from {load_weights_path}.")
@@ -615,14 +613,12 @@ def main():
             total_loss = 0.0
             pbar = tqdm(
                 train,
-                # total=num_batches,
+                total=num_batches,
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
             )
-            logger.warning("1")
             # Train loop
             current_batch = 0
             for x in pbar:
-                logger.warning("2")
                 total_loss += model.distributed_train_step(x)
                 current_batch += 1
                 pbar.set_description(f"Train Loss: {total_loss / current_batch:.4f}")

@@ -179,7 +179,7 @@ class DELM(tf.keras.Model):
         self.initialize = True  # NOTE if this is a tf.Variable(True), and i modify it with .assign(), the weights won't save
 
         # TensorBoard Init
-        TB_FOLDER = "tensorboard"
+        TB_FOLDER = "../tensorboard"
         self.tb_path = None
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
         if not os.path.exists(TB_FOLDER):

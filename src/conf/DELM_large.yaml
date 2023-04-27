@@ -1,6 +1,6 @@
 dim: 768
-domains_vocab_path: 'preprocessing/vocabs/all/exp/domains_vocab.txt'
-hosts_vocab_path: 'preprocessing/vocabs/all/exp/hosts_vocab.txt'
+domains_vocab_path: '../data/vocabs/all/exp/domains_vocab.txt'
+hosts_vocab_path: '../data/vocabs/all/exp/hosts_vocab.txt'
 mask_p:
     mask: 0.075
     same: 0.015

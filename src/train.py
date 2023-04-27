@@ -340,7 +340,7 @@ def create_sequences(
     return seqs
 
 
-def find_last_checkpoint(dir="checkpoints"):
+def find_last_checkpoint(dir):
     if len(os.listdir(dir)) > 0:
         checkpoint = os.listdir(dir)[
             [os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)].index(
@@ -367,10 +367,11 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    queries_path = f"/mnt/storage15/TI-2016-preprocessed/arrays/{args.version}/queries"
-    # preprocessing/arrays/{args.version}/queries/"
-    domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
-    hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
+    queries_path = (
+        "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
+    )  # "../data/"
+    domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
+    hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
 
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
@@ -460,10 +461,10 @@ def main():
         model.pretrain()
 
     # Manage checkpoint
-    if not os.path.exists("checkpoints"):
-        os.makedirs("checkpoints")
+    if not os.path.exists("../checkpoints"):
+        os.makedirs("../checkpoints")
     checkpoint_folder = os.path.join(
-        "checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
+        "../checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
     )
     if not os.path.exists(checkpoint_folder):
         os.makedirs(checkpoint_folder)
@@ -641,9 +642,9 @@ def main():
 
     # Save embeddings
     if not os.path.exists("embeddings"):
-        os.makedirs("embeddings")
+        os.makedirs("../embeddings")
     embeddings_folder = os.path.join(
-        "embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
+        "../embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
     )
     if not os.path.exists(embeddings_folder):
         os.makedirs(embeddings_folder)
@@ -653,7 +654,7 @@ def main():
     )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
     np.save(
         os.path.join(
-            embeddings_folder, f"embeddings-{os.path.splitext(checkpoint_name)[0]}.npy"
+            embeddings_folder, f"emb-{os.path.splitext(checkpoint_name)[0]}.npy"
         ),
         domain_embeddings,
     )

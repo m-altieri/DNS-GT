@@ -5,15 +5,15 @@ import sys
 import logging
 from colorama import Fore, Style
 import os
-from types import SimpleNamespace as NS
 import datetime
-import time
+from utils.distribute import DummyStrategy
 
 
 class DELM(tf.keras.Model):
     def get_config(self):
         return self.conf
 
+    # UNUSED
     @tf.function
     def onehot(self, seq, vocab_length):
         """seq must contain token indexes (integers)."""
@@ -34,7 +34,7 @@ class DELM(tf.keras.Model):
         )
 
     @tf.function
-    def tb_log_weights(self, vars, every):  # @TODO
+    def tb_log_weights(self, vars, every):  # TODO
         pass
         # def body():
         #     with self.tb_writer.as_default():
@@ -43,11 +43,16 @@ class DELM(tf.keras.Model):
         # tf.cond(tf.math.floormod(self.step, every) == 0, body, lambda: None)
 
     @tf.function
-    def mask(self, hosts, domains, mask_p, same_p, random_p):
+    def mask(self, hosts, domains, mask_p, same_p, random_p, prevent_masking=False):
         tf.debugging.assert_equal(tf.shape(hosts), tf.shape(domains))
         # Randomly decide the tokens to mask for the current batch
         rnd = tf.random.uniform(
-            shape=tf.shape(domains), maxval=1.0, dtype=tf.float32
+            shape=tf.shape(domains),
+            minval=tf.cond(
+                tf.math.equal(prevent_masking, True), lambda: 1.0, lambda: 0.0
+            ),
+            maxval=1.0,
+            dtype=tf.float32,
         )  # [B,L]
 
         rnd = tf.where(
@@ -111,7 +116,29 @@ class DELM(tf.keras.Model):
 
         return hosts, masked_domains, mask  # now i'm not masking the host
 
-    def __init__(self, **conf):
+    def pretrain(self):
+        self.domain_embeddings.trainable = True
+        self.host_embeddings.trainable = True
+        # for block in self.blocks:
+        #     block.set_trainable(True)
+        self.masked_classifier.trainable = True
+        self.binary_classifier.trainable = False
+        self.frozen = False
+
+    def finetune(self):
+        self.domain_embeddings.trainable = False
+        self.host_embeddings.trainable = False
+        # FIXME Now I'm not disabling the block weights, but I should
+        # the problem is that disabling the block weights causes problems
+        # when it comes to loading finetuning weights in distributed mode
+        # (now the workaround is using stop_gradient() in call())
+        # for block in self.blocks:
+        #     block.set_trainable(False)
+        self.masked_classifier.trainable = False
+        self.binary_classifier.trainable = True
+        self.frozen = True
+
+    def __init__(self, conf):
         super(DELM, self).__init__()
 
         # Logger
@@ -139,8 +166,20 @@ class DELM(tf.keras.Model):
             if conf[key] is not None:
                 self.conf[key] = conf[key]
 
+        # Distribution
+        if "dist_strategy" in self.conf:
+            self.dist_strategy = self.conf["dist_strategy"]
+            self.distributed = self.dist_strategy is not DummyStrategy
+        if self.distributed:
+            self._logger.info(
+                f"Initializing model with distribution strategy: {self.dist_strategy}"
+            )
+
+        self.frozen = False
+        self.initialize = True  # NOTE if this is a tf.Variable(True), and i modify it with .assign(), the weights won't save
+
         # TensorBoard Init
-        TB_FOLDER = "tensorboard"
+        TB_FOLDER = "../tensorboard"
         self.tb_path = None
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
         if not os.path.exists(TB_FOLDER):
@@ -148,11 +187,11 @@ class DELM(tf.keras.Model):
         if not self.conf["quick_tb"]:
             self.tb_path = os.path.join(
                 TB_FOLDER,
-                self.conf.get("run_name", None)
+                self.conf.get("run_name")
                 or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
             )
         else:
-            self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
+            self.tb_path = os.path.join(TB_FOLDER, "tmp")
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         # Token Adjacency
@@ -160,19 +199,49 @@ class DELM(tf.keras.Model):
         #     type="binary", normalize=False, tb_writer=self.tb_writer
         # )
 
+        self.hosts_vocabulary = (
+            open(self.conf.get("hosts_vocab_path"), "r").read().split("\n")
+        )
+        self.domains_vocabulary = (
+            open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
+        )
+        if self.conf.get(
+            "max_tokens"
+        ):  # NOTE now I am trimming both hosts and domains to max_tokens;
+            # in theory hosts are a lot less problematic and could be left untrimmed
+            self.hosts_vocabulary = self.hosts_vocabulary[: self.conf.get("max_tokens")]
+            self.domains_vocabulary = self.domains_vocabulary[
+                : self.conf.get("max_tokens")
+            ]
+            self._logger.critical(
+                f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
+            )
+
+        self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
+        self.domains_vocabulary = tf.constant(self.domains_vocabulary)
+
         # Token Indexes Lookup
         self.domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["domains_vocab_path"],
-            num_oov_indices=0,
+            vocabulary=self.domains_vocabulary,
+            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            # TODO now the [UNK] token is automatically added to the vocabulary by StringLookup when num_oov_indices=1;
+            # but I already have the <UNK> token in the vocabulary. I should remove <UNK> from the vocabulary generating script,
+            # and using the oov_token="<UNK>" parameter for StringLoopkup, to have a consistent format with the other special tokens.
+            # also, I should probably just set num_oov_indices=1 and remove <UNK> from the vocabulary altogether.
         )
         self.inverse_domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["domains_vocab_path"], num_oov_indices=0, invert=True
+            vocabulary=self.domains_vocabulary,
+            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            invert=True,
         )
         self.hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["hosts_vocab_path"], num_oov_indices=0
+            vocabulary=self.hosts_vocabulary,
+            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
         )
         self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.conf["hosts_vocab_path"], num_oov_indices=0, invert=True
+            vocabulary=self.hosts_vocabulary,
+            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            invert=True,
         )
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
@@ -180,12 +249,12 @@ class DELM(tf.keras.Model):
         # Tokens Embeddings
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,
-            output_dim=self.conf["domain_dim"],
+            output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
         )
         self.host_embeddings = tf.keras.layers.Embedding(
             input_dim=self.nhosts,
-            output_dim=self.conf["host_dim"],
+            output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
         )
 
@@ -195,7 +264,7 @@ class DELM(tf.keras.Model):
         self.blocks = [
             MHGAT_Block(
                 n_heads=self.conf["n_heads"],
-                emb_dim=self.conf["domain_dim"],
+                emb_dim=self.conf["dim"],
                 block_id=block,
                 tensorboard=self.conf["tensorboard"],
                 tb_writer=self.tb_writer,
@@ -204,10 +273,13 @@ class DELM(tf.keras.Model):
         ]
 
         # Classification Layers
-        self.classifier = Classifier([], self.ndomains)
+        self.masked_classifier = FF(
+            [self.ndomains], ["softmax"]
+        )  # Softmax masking classifier
+        self.binary_classifier = FF([1], ["sigmoid"])  # Binary classifier
 
-    # @tf.function
-    def call(self, inputs, training=None):
+    @tf.function
+    def call(self, inputs, training=None, **kwargs):
         # Separate host from domain tokens in the given sequence
         hosts = self.slice_hosts(inputs)
         domains = self.slice_domains(inputs)  # [B,L,1]
@@ -215,12 +287,20 @@ class DELM(tf.keras.Model):
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
 
         # Mask the tokens if required
-        mask = None
-        if training or self.conf["mask_test"]:
-            mask_p = tf.constant(self.conf["mask_p"]["mask"])
-            same_p = tf.constant(self.conf["mask_p"]["same"])
-            random_p = tf.constant(self.conf["mask_p"]["random"])
-            hosts, domains, mask = self.mask(hosts, domains, mask_p, same_p, random_p)
+        mask_p = tf.constant(self.conf["mask_p"]["mask"])
+        same_p = tf.constant(self.conf["mask_p"]["same"])
+        random_p = tf.constant(self.conf["mask_p"]["random"])
+        hosts, domains, mask = self.mask(
+            hosts,
+            domains,
+            mask_p,
+            same_p,
+            random_p,
+            prevent_masking=(not training or self.frozen)
+            and not kwargs.get(
+                "force_masking"
+            ),  # test_step() è training=False, ma ha comunque bisogno del masking
+        )
 
         # adj_h = self.adj_estimator(
         #     domains
@@ -238,7 +318,7 @@ class DELM(tf.keras.Model):
         e_h = self.host_embeddings(host_indexes)
 
         # Weighted sum of host and domain embeddings (according to omega)
-        # @TODO @ISSUE This can only be done if domain dim and host dim are the same!
+        # TODO This can only be done if domain dim and host dim are the same!
         emb = self.conf["omega"] * e_d + (1 - self.conf["omega"]) * e_h
 
         # Dropout the embeddings before feeding to MHGAT blocks
@@ -246,14 +326,34 @@ class DELM(tf.keras.Model):
 
         # Forward embeddings through MHGAT blocks
         for block in self.blocks:
-            emb = block(emb, adj_h, step=self.step)
+            if self.frozen:
+                emb = tf.stop_gradient(
+                    block(emb, adj_h, step=self.step)
+                )  # workaround for the (--load, --gpu all) finetuned bug
+            else:
+                emb = block(emb, adj_h, step=self.step)
 
-        # Call classification layers on final embeddings
-        emb = self.classifier(emb)
+        # Force initializiation of weights for both layers
+        # by calling them both even if not needed;
+        # this prevents problems when loading weights
+        # TODO this creates a huge memory inefficiency; fix the problem in a cleaner way
 
-        return emb, mask
+        # softmax = self.masked_classifier(emb)
+        # c = self.binary_classifier(emb)
+        # return softmax if not self.frozen else c, mask
 
-    # Unused
+        if self.initialize:  # force initialization of all weights
+            res = self.masked_classifier(emb)
+            res = self.binary_classifier(emb)
+            self.initialize = False
+
+        if not self.frozen:
+            res = self.masked_classifier(emb)
+        else:
+            res = self.binary_classifier(emb)
+        return res, mask
+
+    # UNUSED
     @tf.function
     def correct_unmasked(self, pred, mask, truth):
         true_onehot = tf.one_hot(
@@ -274,21 +374,39 @@ class DELM(tf.keras.Model):
 
         return tf.where(mask, pred, true_onehot)
 
+    @tf.function
+    def distributed_train_step(self, seq):
+        loss = self.dist_strategy.run(self.train_step, args=(seq,))
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+
+    @tf.function
+    def distributed_test_step(self, seq):
+        loss = self.dist_strategy.run(self.test_step, args=(seq,))
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+
     def train_step(self, seq):
+        if self.frozen:
+            seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)  # [B,L]
 
         with tf.GradientTape() as tape:
             pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
 
-            loss = self.compiled_loss(
-                tf.boolean_mask(domain_indexes, mask),
-                tf.boolean_mask(pred, mask),
-                regularization_losses=self.losses,
-            )
-
-        with self.tb_writer.as_default():
-            tf.summary.scalar("train_loss", loss, step=self.step)
+            if not self.frozen:
+                loss = self.compiled_loss(
+                    tf.boolean_mask(domain_indexes, mask),
+                    tf.boolean_mask(pred, mask),
+                    regularization_losses=self.losses,
+                )
+            else:
+                loss = self.compiled_loss(tf.squeeze(pred), y)
+            if self.distributed:
+                # TODO Check that the distributed loss is calculated correctly,
+                # especially considering that tf.size(loss) is different every time and a bit random
+                loss = tf.math.divide(
+                    tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+                )
 
         # Compute gradients and update weights
         trainable_variables = self.trainable_variables
@@ -299,13 +417,52 @@ class DELM(tf.keras.Model):
         # Update metrics (includes the metric that tracks the loss)
         self.compiled_metrics.update_state(domain_indexes, pred)
 
+        if self.conf.get("tensorboard"):
+            with self.tb_writer.as_default():
+                tf.summary.scalar("train_loss", loss, step=self.step)
+
         # TensorBoard -- Increment step
         self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
-    # @tf.function
+    def test_step(self, seq):
+        if self.frozen:
+            seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
+        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
+        domain_indexes = self.domains_lookup(domains)
+
+        pred, mask = self(
+            seq, training=False, force_masking=True
+        )  # without force_masking, we have no test loss
+
+        if not self.frozen:
+            loss = self.compiled_loss(
+                tf.boolean_mask(domain_indexes, mask),
+                tf.boolean_mask(pred, mask),
+                regularization_losses=self.losses,
+            )
+        else:
+            loss = self.compiled_loss(tf.squeeze(pred), y)
+
+        if self.distributed:
+            # TODO Check that the distributed loss is calculated correctly,
+            # especially considering that tf.size(loss) is different every time and a bit random
+            loss = tf.math.divide(
+                tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+            )
+
+        if self.conf.get("tensorboard"):
+            with self.tb_writer.as_default():
+                tf.summary.scalar("val_loss", loss, step=self.step)
+
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(domain_indexes, pred)
+
+        # Return a dict mapping metric names to current value
+        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
+
     def _predict(self, seq, mask):
         mask = tf.constant(mask, dtype=tf.bool)
         domains_mask = tf.squeeze(self.slice_domains(mask), axis=-1)
@@ -326,46 +483,24 @@ class DELM(tf.keras.Model):
 
         return pred, loss
 
-    def test_step(self, seq):
-        domains = tf.squeeze(self.slice_domains(seq), axis=-1)
-        domain_indexes = self.domains_lookup(domains)
-
-        pred, mask = self(seq, training=False)
-
-        loss = self.compiled_loss(
-            tf.boolean_mask(domain_indexes, mask),
-            tf.boolean_mask(pred, mask),
-            regularization_losses=self.losses,
-        )
-
-        with self.tb_writer.as_default():
-            tf.summary.scalar("val_loss", loss, step=self.step)
-
-        # Update metrics (includes the metric that tracks the loss)
-        self.compiled_metrics.update_state(domain_indexes, pred)
-
-        # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
-
 
 class MHGAT_Block(tf.keras.layers.Layer):
     @tf.function
     def tb_log_image(self, name, tensor, step, minmax=False):
-        if self.tensorboard:
-            tensor = tf.cond(
-                tf.math.equal(tf.rank(tensor), tf.constant(3)),
-                lambda: tf.expand_dims(tensor, -1),
-                lambda: tensor,
+        tensor = tf.cond(
+            tf.math.equal(tf.rank(tensor), tf.constant(3)),
+            lambda: tf.expand_dims(tensor, -1),
+            lambda: tensor,
+        )
+        tensor = tf.cond(
+            tf.constant(minmax), lambda: self.minmax_norm(tensor), lambda: tensor
+        )
+        with self.tb_writer.as_default():
+            tf.summary.image(
+                name=name,
+                data=tensor,
+                step=step,
             )
-            tensor = tf.cond(
-                tf.constant(minmax), lambda: self.minmax_norm(tensor), lambda: tensor
-            )
-            with self.tb_writer.as_default():
-                tf.summary.image(
-                    name=name,
-                    data=tensor,
-                    step=step,
-                )
 
     @tf.function
     def minmax_norm(self, tensor):
@@ -373,6 +508,19 @@ class MHGAT_Block(tf.keras.layers.Layer):
             tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
             tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
         )
+
+    # UNUSED
+    def set_trainable(self, trainable):
+        for W in self.Wq:
+            W.trainable = trainable
+        for W in self.Wk:
+            W.trainable = trainable
+        for W in self.Wv:
+            W.trainable = trainable
+        self.Wo.trainable = trainable
+        self.linear1.trainable = trainable
+        self.nonlinear.trainable = trainable
+        self.linear2.trainable = trainable
 
     def __init__(self, n_heads, emb_dim, **kwargs):
         super(MHGAT_Block, self).__init__()
@@ -416,12 +564,15 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Feed Forward NN
         self.linear1 = tf.keras.layers.Dense(
-            self.emb_dim
+            self.emb_dim,
         )  # dall'eq. (2) di Vaswani sembra che questo linear1 non ci sia
         self.nonlinear = tf.keras.layers.Dense(
-            self.emb_dim * self.nonlinear_stretch, activation="relu"
+            self.emb_dim * self.nonlinear_stretch,
+            activation=tf.keras.activations.gelu,
         )
-        self.linear2 = tf.keras.layers.Dense(self.emb_dim)
+        self.linear2 = tf.keras.layers.Dense(
+            self.emb_dim,
+        )
 
         # Batch Normalization
         self.bn2 = tf.keras.layers.BatchNormalization()
@@ -450,9 +601,6 @@ class MHGAT_Block(tf.keras.layers.Layer):
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
         )  # [B, n_heads, L, L] (normalization)
 
-        # tf.print(scores[:, 7])
-        # tf.print(tf.math.reduce_max(scores[:, 7]))
-        # tf.print(tf.math.reduce_min(scores[:, 7]))
         self.tb_log_image(f"MHGAT{self.block_id}/7", scores[:, 7], step=0, minmax=True)
 
         # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
@@ -466,9 +614,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         scores = self.softmax(
             scores, mask=adj_h
         )  # [B, n_heads, L, L] attention weights
-        # tf.print(scores[:, 7], summarize=-1)
-        # tf.print(tf.math.reduce_max(scores[:, 7]))
-        # tf.print(tf.math.reduce_min(scores[:, 7]))
+
         self.tb_log_image(
             f"MHGAT{self.block_id}/7-after-softmax", scores[:, 7], step=0, minmax=True
         )
@@ -499,36 +645,27 @@ class MHGAT_Block(tf.keras.layers.Layer):
         return result
 
 
-class Classifier(tf.keras.layers.Layer):
-    def __init__(self, dense_dims, softmax_dim):
-        super(Classifier, self).__init__()
-
-        # Logger
-        self._logger = logging.getLogger(__name__)
-        self._logger.setLevel(logging.INFO)
-        self._logger.addHandler(logging.StreamHandler(sys.stdout))
-
-        # Optional nonlinear layers; they don't include the one mapping to vocab length
+class FF(tf.keras.layers.Layer):
+    def __init__(self, dims, activations, **kwargs):
+        super(FF, self).__init__()
+        assert len(dims) == len(activations)
         self.dense_layers = [
-            tf.keras.layers.Dense(dim, activation="relu") for dim in dense_dims
+            tf.keras.layers.Dense(dim, activation=activation)
+            for dim, activation in zip(dims, activations)
         ]
 
-        self.out = tf.keras.layers.Dense(softmax_dim, activation="linear")
-
     @tf.function
-    def call(self, emb):
+    def call(self, x):
         for l in self.dense_layers:
-            emb = l(emb)
-        emb = self.out(emb)
-        emb = tf.nn.softmax(emb)
+            emb = l(x)
         return emb
 
 
 class AdjacencyEstimator(tf.keras.layers.Layer):
     @tf.function
     def duplicate_axis(self, tensor, from_axis, to_axis, order="C"):
-        """@TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize
-        tensor: input tensor
+        # TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize
+        """tensor: input tensor
         from_axis: the axis to duplicate
         to_axis: the position of the new duplicated axis
         order: 'C' for c-style ordering, 'F' for fortran-style ordering

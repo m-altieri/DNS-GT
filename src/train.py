@@ -1,27 +1,31 @@
+import os
 import sys
-import os
-import tensorflow as tf
-import numpy as np
-import argparse
-from models import DELM, Word2Vec
 import time
-import os
-from tqdm.keras import TqdmCallback
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
 import logging
+import argparse
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
 from colorama import Fore, Style
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
+import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+from models import DELM, Word2Vec
+from utils.distribute import DummyStrategy
 
-def config_tf(args):
-    if args.gpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    physical_devices = tf.config.list_physical_devices("GPU")
-    for device in physical_devices:
+
+def config_gpus(args):
+    if isinstance(args.gpu, int):
+        device = tf.config.list_physical_devices("GPU")[args.gpu]
+        tf.config.set_visible_devices(device, "GPU")
+        print(f"Set {device} as the only visible device.")
+    for device in tf.config.get_visible_devices("GPU"):
         try:
             tf.config.experimental.set_memory_growth(device, True)
-        except:
-            print(f"Cannot enable memory growth on some device.")
-            sys.exit(1)
+        except Exception as e:
+            print("Cannot enable memory growth on device:", device)
+            sys.exit(e)
 
 
 def get_logger(verbose=False):
@@ -33,37 +37,52 @@ def get_logger(verbose=False):
     return logger
 
 
-def build_model(model, args):
-    if model.lower() == "delm":
-        model = DELM(
-            seqlen=args.seqlen,
-            blocks=args.blocks,
-            mask_test=args.mask_test,
-            tensorboard=args.tensorboard,
-            quick_tb=args.quick_tb,
-            run_name=args.run_name,
-            omega=args.omega,
-            version=args.version,
+def build_model(model, args, **kwargs):
+    loss_reduction = tf.keras.losses.Reduction.NONE if args.distribute else "auto"
+    loss = (
+        tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=False, reduction=loss_reduction
         )
+        if not args.finetune
+        else tf.keras.losses.BinaryCrossentropy(
+            from_logits=False, reduction=loss_reduction
+        )
+    )
+    with kwargs["dist_strategy"].scope():
+        if model.lower() == "delm":
+            model = DELM(vars(args) | kwargs)
+            # seqlen=args.seqlen,
+            # blocks=args.blocks,
+            # tensorboard=args.tensorboard,
+            # quick_tb=args.quick_tb,
+            # run_name=args.run_name,
+            # omega=args.omega,
+            # version=args.version,
+            # dim=args.dim,
+            # bs=args.bs,
+            # dist_strategy=kwargs["dist_strategy"],
+        elif model.lower() == "w2v":
+            model = Word2Vec(
+                vars(args)
+                | kwargs
+                # type=args.type,
+                # dim=args.dim,
+                # tensorboard=args.tensorboard,
+                # quick_tb=args.quick_tb,
+                # run_name=args.run_name,
+            )
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
+            loss=loss,
+            metrics=[],
             run_eagerly=args.eager,
         )
-    elif model.lower() == "w2v":
-        model = Word2Vec(type=args.type)
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.SparseCategoricalCrossentropy(from_logits=False)],
-            run_eagerly=args.eager,
-        )
-    return model
+        return model
 
 
 def parse_args():
     argparser = argparse.ArgumentParser()
+    argparser.add_argument("model", action="store", default="DELM")
     argparser.add_argument(
         "--es",
         action="store_true",
@@ -90,7 +109,7 @@ def parse_args():
         help="Number of training epochs",
     )
     argparser.add_argument(
-        "--bs", action="store", default=256, type=int, help="Batch size"
+        "--bs", action="store", default=512, type=int, help="Batch size"
     )
     argparser.add_argument(
         "--lr", action="store", default=1e-4, type=float, help="Learning rate"
@@ -129,42 +148,86 @@ def parse_args():
         help="Version of the dataset used.",
     )
     argparser.add_argument(
+        "--tiny",
+        action="store_true",
+        help="Use for debugging purposes, to use a tiny portion of the dataset to get faster feedback.",
+    )
+    argparser.add_argument(
         "--gpu",
         action="store",
-        help="Only set it if you are running on a multi-gpu machine (es. --gpu 3)",
+        help="If it is an integer (eg. --gpu 3), run on a single specific GPU. "
+        + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "  # TODO
+        + "If it is `all`, distribute on all GPUs.",
     )
-    argparser.add_argument("--tensorboard", action="store_true")
+    argparser.add_argument("--tensorboard", "--tb", action="store_true")
     argparser.add_argument(
         "--quick-tb",
         action="store_true",
         help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
     )
     argparser.add_argument("--eager", action="store_true")
-    argparser.add_argument("--blocks", action="store", type=int, default=4)
+    argparser.add_argument("--blocks", action="store", type=int)
     argparser.add_argument("--group-hosts", action="store_true", default=True)
     argparser.add_argument(
         "--run-name",
         action="store",
-        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}.h5',
+        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
+        help="Name used when saving to file. Has no effect if --load.",
     )
-    argparser.add_argument("--omega", action="store", type=float, default=0.8)
+    argparser.add_argument("--omega", action="store", type=float)
     argparser.add_argument("--shuffle", action="store_true")
-    argparser.add_argument("model", action="store", default="DELM")
     argparser.add_argument(
         "--type",
         action="store",
         help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
     )
+    argparser.add_argument(
+        "--dim",
+        action="store",
+        type=int,
+        help="Dimension of the embeddings. Now host and domain embeddings always have the same dimension.",
+    )
+    argparser.add_argument(
+        "--finetune",
+        "--ft",
+        action="store_true",
+        help="Freeze all layers and use the classification workflow instead of the embedding learning workflow.",
+    )
+    argparser.add_argument(
+        "--from-pretrained",
+        "--from-pt",
+        action="store_true",
+        help="Whether to load weights from existing finetuned model or from pretrained model. "
+        + "Only has effect if --finetune.",
+    )
+    argparser.add_argument("--max-tokens", action="store", type=int)
 
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
 
-    args.mask_test = not args.demo
+    try:
+        args.gpu = int(args.gpu)
+    except:  # it is not a number, it's either None or `all`
+        pass
+    try:
+        if "[" in args.gpu:  # if it is a list
+            args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
+    except:  # it is not a list, let's try with a number
+        pass
+    if isinstance(args.gpu, list) or args.gpu == "all":
+        args.distribute = True
+        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
+            "GPU"
+        )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
+    else:
+        args.distribute = False
 
     if args.demo:
         args.eager = True
         args.tensorboard = True
+        args.gpu = None
+        args.distribute = False
     return args
 
 
@@ -173,8 +236,11 @@ def seq_generator_from_folder(
     seqlen,
     stride=1,
     include_start=False,
+    include_class=False,
     group_hosts=True,
     model=None,
+    vocab=None,
+    tiny_amount=None,
 ):
     """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
     for f in os.listdir(input_folder):
@@ -185,8 +251,11 @@ def seq_generator_from_folder(
             seqlen,
             stride,
             include_start,
+            include_class,
             group_hosts,
             model,
+            vocab,
+            tiny_amount,
         )
         for seq in seqs:
             yield seq
@@ -197,20 +266,65 @@ def create_sequences(
     seqlen,
     stride=1,
     include_start=False,
+    include_class=False,
     group_hosts=True,
     model=None,
-):  # input [queries, 2]
+    vocab=None,
+    tiny_amount=None,
+):
 
     queries = np.load(input_file, allow_pickle=True)
-    if group_hosts:
-        queries = queries[
-            np.argsort(queries[:, 0])
-        ]  # Sort queries by host, preserving row structure
+    if tiny_amount:
+        queries = queries[:10000]
 
-    if model == "delm":  # output [queries - stride, seqlen, 2]
+    if include_class:
+        labels = pd.read_csv(
+            os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
+        )
+        labels.columns = pd.MultiIndex.from_tuples(
+            [
+                ("domain", ""),
+                ("advertising", "good"),
+                ("advertising", "ok"),
+                ("malicious", "good"),
+                ("malicious", "ok"),
+                ("suspicious", "good"),
+                ("suspicious", "ok"),
+                ("tracking", "good"),
+                ("tracking", "ok"),
+                ("other", "good"),
+                ("other", "ok"),
+                ("any", "good"),
+                ("any", "ok"),
+            ]
+        )
+        # Only use labels for domains in embs (i.e. in the vocabulary)
+        labels = labels[labels["domain"].isin(vocab)]
+        labels = labels.reset_index()
+
+        # take (any, ok) column
+        labels = labels[["domain", "any"]]
+        labels = labels.to_numpy()[:, [0, 2]]
+
+        # add class to each query
+        sorter = np.argsort(labels[:, 0])
+        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
+        classes = labels[idx, 1]
+        queries = np.concatenate(
+            [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
+        )
+
+    if group_hosts:  # sort queries by host, preserving row structure
+        queries = queries[np.argsort(queries[:, 0])]
+
+    if model == "delm":  # output [queries - stride, seqlen, 2 or 3]
         actual_seqlen = seqlen - include_start
         seqs = np.empty(
-            shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2),
+            shape=(
+                (len(queries) - actual_seqlen) // stride + 1,
+                seqlen,
+                3 if include_class else 2,
+            ),
             dtype=object,
         )
         for i, _ in enumerate(seqs):
@@ -219,15 +333,14 @@ def create_sequences(
             seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
 
     elif model == "w2v":  # output [queries, seqlen]
-        seqs = np.array(Word2Vec.create_pairs(queries[:, 1], seqlen))
-
+        seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], seqlen))
     else:
         raise ValueError("Specify model to create sequences.")
 
     return seqs
 
 
-def find_last_checkpoint(dir="checkpoints"):
+def find_last_checkpoint(dir):
     if len(os.listdir(dir)) > 0:
         checkpoint = os.listdir(dir)[
             [os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)].index(
@@ -239,12 +352,12 @@ def find_last_checkpoint(dir="checkpoints"):
     return checkpoint
 
 
+def default_checkpoint(args):
+    return f"{args.run_name}.h5"
+
+
 def indent(depth=1):
     return f"".join(["--" for i in range(depth - 1)]) + "> "
-
-
-def default_checkpoint(args):
-    return args.run_name
 
 
 def main():
@@ -254,24 +367,41 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    queries_path = f"preprocessing/arrays/{args.version}/queries/"
-    domains_vocab_path = f"preprocessing/vocabs/{args.version}/domains_vocab.txt"
-    hosts_vocab_path = f"preprocessing/vocabs/{args.version}/hosts_vocab.txt"
+    queries_path = (
+        "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
+    )  # "../data/"
+    domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
+    hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
 
-    config_tf(args)
+    with open(domains_vocab_path, "r") as f:
+        domains_vocab = [l.strip() for l in f.readlines()]
 
+    # if args.max_tokens:  # truncate vocabulary to --max-tokens
+    #     domains_vocab = domains_vocab[
+    #         : min(len(domains_vocab), args.max_tokens)
+    #     ]  # TODO finchè gli dai il path al modello, puoi troncare quanto vuoi, lui andrà sempre a caricare il vocab dal file direttamente. bisogna o creare un vocab file troncato a runtime e dare quello, o caricare il vocab come tensore/array e usaare adapt()
+
+    # config_tf(args)
+    config_gpus(args)
+
+    # Data Pipeline
     train = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
+            vocab=domains_vocab,
+            tiny_amount=args.tiny,
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        output_signature=tf.TensorSpec(
+            shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
+        )
         if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
+        else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
@@ -279,80 +409,116 @@ def main():
             stride=args.stride,
             seqlen=args.seqlen,
             include_start=args.include_start,
+            include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
+            vocab=domains_vocab,
+            tiny_amount=args.tiny,
         ),
-        output_signature=tf.TensorSpec(shape=(args.seqlen, 2), dtype=tf.string)
+        output_signature=tf.TensorSpec(
+            shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
+        )
         if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=(args.seqlen,), dtype=tf.string),
+        else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )
-
     if not args.demo and args.shuffle:
         train = train.shuffle(1000000)
     train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
     test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
 
-    model = build_model(args.model, args)
+    # Distribution
+    dist_strategy = None
+    if args.distribute:
+        gpus = (
+            [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
+        )  # initializing MirroredStrategy with None uses all gpus
+        dist_strategy = tf.distribute.MirroredStrategy(gpus)
+        logger.warning(
+            f"{Fore.YELLOW}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
+        )
+
+        # Data Config
+        options = tf.data.Options()
+        options.experimental_distribute.auto_shard_policy = (
+            tf.data.experimental.AutoShardPolicy.DATA
+        )
+        train = train.with_options(options)
+        test = test.with_options(options)
+        train = dist_strategy.experimental_distribute_dataset(train)
+        test = dist_strategy.experimental_distribute_dataset(test)
+    else:
+        dist_strategy = DummyStrategy
+
+    # Build Model
+    model = build_model(
+        args.model,
+        args,
+        dist_strategy=dist_strategy,
+    )
+    if args.finetune:  # freeze all layers but the last classification layer
+        model.finetune(freeze_weights=False)
+    else:  # unfreeze in case it was frozen
+        model.pretrain()
 
     # Manage checkpoint
-    if not os.path.exists("checkpoints"):
-        os.makedirs("checkpoints")
+    if not os.path.exists("../checkpoints"):
+        os.makedirs("../checkpoints")
     checkpoint_folder = os.path.join(
-        "checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
+        "../checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
     )
     if not os.path.exists(checkpoint_folder):
         os.makedirs(checkpoint_folder)
-
     checkpoint_name = default_checkpoint(args)
 
-    if args.load:
+    logger.info(f"Calling model to initialize layers...")
+    if args.distribute:
+        model.distributed_test_step(next(iter(test)))
+    else:
+        model.test_step(next(iter(test)))
+
+    if args.load:  # load saved weights if --load
         checkpoint_name = (
             find_last_checkpoint(dir=checkpoint_folder)
             if args.load == "last"
             else args.load
         )
-        logger.debug(
-            f"Trying to load model weights from {os.path.join(checkpoint_folder, checkpoint_name)}..."
+        load_weights_path = os.path.join(
+            checkpoint_folder,
+            f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * (args.finetune and not args.from_pretrained)}.h5",
         )
 
-        logger.info(f"Calling model to initialize layers...")
-        # model(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-
-        sample = np.array(list(train.take(1).unbatch().as_numpy_iterator())[0:1])
-        logger.info(sample)
-        model.test_step(sample)
-
+        logger.info(f"Trying to load weights from {load_weights_path}...")
         try:
-            model.load_weights(os.path.join(checkpoint_folder, checkpoint_name))
-            logger.info(
-                f"Model weights loaded from {os.path.join(checkpoint_folder, checkpoint_name)}."
-            )
+            with dist_strategy.scope():  # not sure if the scope is needed
+                model.load_weights(
+                    load_weights_path,
+                    skip_mismatch=False,  # let's try false, it was true
+                    by_name=True,
+                )
+            logger.info(f"Model weights loaded from {load_weights_path}.")
         except Exception as e:
             logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {checkpoint_name}:\n{Style.DIM}{e}\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
+                f"{Fore.RED}Exception when trying to load checkpoint {load_weights_path}:\n{Style.DIM}{e}"
+                + f"\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
             )
             checkpoint_name = default_checkpoint(args)
 
     if args.demo:
         logger.info(
-            f"{Style.BRIGHT}\nDomain Embeddings Language Model v0.1{Style.RESET_ALL}\n"
+            f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
-
-        with open(domains_vocab_path, "r") as f:
-            domains_vocab = [l.strip() for l in f.readlines()]
-
         seq = (
             train.unbatch()
             .skip(args.test_seq or np.random.randint(0, 1000))
-            .take(10)
+            .take(1)
             .as_numpy_iterator()
         )
         seq = np.array([s for s in seq], dtype=object)
-        print(seq)
+
         # uncomment this assignment to manually create a sequence
-        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern in the training data
+        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern found in the training data
         # seq = np.array(
         #     [
         #         [
@@ -376,8 +542,9 @@ def main():
         # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
         # example: mask[0, 1, 1]
         #   always zero ^  ^  ^
-        #      first token |  |
+        #     second token |  |
         #                     | domain
+        mask[0, 1, -1] = 1
 
         masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
@@ -385,60 +552,99 @@ def main():
         pred = pred[0]
 
         for i in range(len(pred)):
-
-            masked_host = masked_seq[0, i, 0]
+            masked_host = model.inverse_hosts_lookup(
+                model.hosts_lookup(masked_seq[0, i, 0])
+            )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
             if type(masked_host) is bytes:
                 masked_host = masked_host.decode("utf-8")
-            domain = seq[0, i, 1]
+
+            domain = model.inverse_domains_lookup(model.domains_lookup(seq[0, i, 1]))
             if type(domain) is bytes:
                 domain = domain.decode("utf-8")
-            masked_domain = masked_seq[0, i, 1]
+
+            masked_domain = model.inverse_domains_lookup(
+                model.domains_lookup(masked_seq[0, i, 1])
+            )
             if type(masked_domain) is bytes:
                 masked_domain = masked_domain.decode("utf-8")
 
-            predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
-            domain_index = domains_vocab.index(domain)
+            # predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
+            # domain_index = domains_vocab.index(domain)
+            predicted_token = model.inverse_domains_lookup(
+                np.array(pred).argmax(axis=-1)[i]
+            )
+            domain_index = model.domains_lookup(domain)
             logger.info(
                 f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
             )
 
         logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
-        logger.info(model.summary())
 
         sys.exit(0)
 
-    logger.debug("Starting model training...")
-    model.fit(
-        x=train,
-        y=None,
-        validation_data=test,
-        validation_freq=1,
-        batch_size=args.bs,
-        epochs=args.epochs,
-        callbacks=[
-            ModelCheckpoint(
-                os.path.join(checkpoint_folder, checkpoint_name),
-                monitor="loss",
-                save_weights_only=True,
-            ),
-            TensorBoard(
-                log_dir=os.path.join("tensorboard", args.run_name),
-                histogram_freq=1,
-                profile_batch="500,520",
-            ),
-        ],
+    if args.verbose:
+        logger.info(model.summary())
+
+    # Save model weights
+    save_weights_path = os.path.join(
+        checkpoint_folder,
+        f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * args.finetune}.h5",
     )
+
+    logger.debug("Starting model training...")
+    if not args.distribute:
+        model.fit(
+            x=train,
+            y=None,
+            validation_data=test,
+            validation_freq=1,
+            batch_size=args.bs,
+            epochs=args.epochs,
+            callbacks=[
+                ModelCheckpoint(
+                    save_weights_path,
+                    monitor="loss",
+                    save_weights_only=True,
+                ),
+            ],
+        )
+    else:  # if args.distribute
+        num_batches = None
+        for epoch in range(args.epochs):
+            total_loss = 0.0
+            pbar = tqdm(
+                train,
+                total=num_batches,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
+            )
+            # Train loop
+            current_batch = 0
+            for x in pbar:
+                total_loss += model.distributed_train_step(x)
+                current_batch += 1
+                pbar.set_description(f"Train Loss: {total_loss / current_batch:.4f}")
+
+            # Test loop
+            for x in test:
+                total_loss += model.distributed_test_step(x)
+            logger.info(f"Test Loss: {total_loss / current_batch:.4f}")
+
+            # Save model weights
+            with dist_strategy.scope():
+                model.save_weights(save_weights_path)
+
+            num_batches = current_batch
+
     logger.debug(f"Model training completed.")
 
-    model.save_weights(
-        os.path.join(checkpoint_folder, checkpoint_name)
-    )  # Save model weights
+    with dist_strategy.scope():  # not sure if the scope is needed
+        model.save_weights(save_weights_path)
 
     # Save embeddings
     if not os.path.exists("embeddings"):
-        os.makedirs("embeddings")
+        os.makedirs("../embeddings")
     embeddings_folder = os.path.join(
-        "embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
+        "../embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
     )
     if not os.path.exists(embeddings_folder):
         os.makedirs(embeddings_folder)
@@ -448,13 +654,16 @@ def main():
     )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
     np.save(
         os.path.join(
-            embeddings_folder, f"embeddings-{os.path.splitext(checkpoint_name)[0]}.npy"
+            embeddings_folder, f"emb-{os.path.splitext(checkpoint_name)[0]}.npy"
         ),
         domain_embeddings,
     )
 
     logger.debug("Starting model evaluation...")
-    model.evaluate(x=test, y=None, batch_size=args.bs)
+    if not args.distribute:
+        model.evaluate(x=test, y=None, batch_size=args.bs)
+    else:  # TODO evaluate can't be used with DistributedDataset, have to loop manually
+        pass
     logger.debug("Model evaluation completed.")
 
 

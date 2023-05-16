@@ -1,11 +1,11 @@
-domain_dim: 128
-host_dim: 128
-domains_vocab_path: 'preprocessing/vocabs/all/domains_vocab.txt'
-hosts_vocab_path: 'preprocessing/vocabs/all/hosts_vocab.txt'
+dim: 768
+domains_vocab_path: '../data/vocabs/all/exp/domains_vocab.txt'
+hosts_vocab_path: '../data/vocabs/all/exp/hosts_vocab.txt'
 mask_p:
-    mask: 0.08
-    same: 0.01
+    mask: 0.075
+    same: 0.015
     random: 0.01
-n_heads: 16
-mask_test: true
+n_heads: 12
+omega: 1.0
+blocks: 12
 quick_tb: false

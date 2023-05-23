@@ -6,11 +6,14 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import sklearn.metrics
+import matplotlib.pyplot as plt
 from colorama import Fore, Style
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+from tensorflow.keras.callbacks import ModelCheckpoint
+
 from models import DELM, Word2Vec
 from utils.distribute import DummyStrategy
 
@@ -39,38 +42,19 @@ def get_logger(verbose=False):
 
 def build_model(model, args, **kwargs):
     loss_reduction = tf.keras.losses.Reduction.NONE if args.distribute else "auto"
-    loss = (
-        tf.keras.losses.SparseCategoricalCrossentropy(
+    if args.finetune:
+        loss = tf.keras.losses.BinaryCrossentropy(
             from_logits=False, reduction=loss_reduction
         )
-        if not args.finetune
-        else tf.keras.losses.BinaryCrossentropy(
+    else:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
             from_logits=False, reduction=loss_reduction
         )
-    )
     with kwargs["dist_strategy"].scope():
         if model.lower() == "delm":
             model = DELM(vars(args) | kwargs)
-            # seqlen=args.seqlen,
-            # blocks=args.blocks,
-            # tensorboard=args.tensorboard,
-            # quick_tb=args.quick_tb,
-            # run_name=args.run_name,
-            # omega=args.omega,
-            # version=args.version,
-            # dim=args.dim,
-            # bs=args.bs,
-            # dist_strategy=kwargs["dist_strategy"],
         elif model.lower() == "w2v":
-            model = Word2Vec(
-                vars(args)
-                | kwargs
-                # type=args.type,
-                # dim=args.dim,
-                # tensorboard=args.tensorboard,
-                # quick_tb=args.quick_tb,
-                # run_name=args.run_name,
-            )
+            model = Word2Vec(vars(args) | kwargs)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
             loss=loss,
@@ -191,7 +175,20 @@ def parse_args():
         "--finetune",
         "--ft",
         action="store_true",
-        help="Freeze all layers and use the classification workflow instead of the embedding learning workflow.",
+        help="Use the classification workflow instead of the embedding learning workflow.",
+    )
+    argparser.add_argument(
+        "--freeze",
+        action="store_true",
+        help="Freeze all layers except the classification ones. Only has effect if --finetune.",
+    )
+    argparser.add_argument(
+        "--test-fold",
+        type=int,
+        help="Test fold to choose during finetuning. "
+        + "Domains contained in the fold will not be used for loss computation, making them suitable for testing. "
+        + "If not set, all domains will be considered during loss computation. "
+        + "Only has effect if --finetune.",  # TODO Now it is mandatory if --finetune, otherwise there are errors. Make it optional
     )
     argparser.add_argument(
         "--from-pretrained",
@@ -228,6 +225,7 @@ def parse_args():
         args.tensorboard = True
         args.gpu = None
         args.distribute = False
+        args.bs = 1
     return args
 
 
@@ -272,7 +270,6 @@ def create_sequences(
     vocab=None,
     tiny_amount=None,
 ):
-
     queries = np.load(input_file, allow_pickle=True)
     if tiny_amount:
         queries = queries[:10000]
@@ -376,12 +373,6 @@ def main():
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
 
-    # if args.max_tokens:  # truncate vocabulary to --max-tokens
-    #     domains_vocab = domains_vocab[
-    #         : min(len(domains_vocab), args.max_tokens)
-    #     ]  # TODO finchè gli dai il path al modello, puoi troncare quanto vuoi, lui andrà sempre a caricare il vocab dal file direttamente. bisogna o creare un vocab file troncato a runtime e dare quello, o caricare il vocab come tensore/array e usaare adapt()
-
-    # config_tf(args)
     config_gpus(args)
 
     # Data Pipeline
@@ -456,7 +447,7 @@ def main():
         dist_strategy=dist_strategy,
     )
     if args.finetune:  # freeze all layers but the last classification layer
-        model.finetune(freeze_weights=False)
+        model.finetune()
     else:  # unfreeze in case it was frozen
         model.pretrain()
 
@@ -484,7 +475,7 @@ def main():
         )
         load_weights_path = os.path.join(
             checkpoint_folder,
-            f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * (args.finetune and not args.from_pretrained)}.h5",
+            f"{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * (args.finetune and not args.from_pretrained)}.h5",
         )
 
         logger.info(f"Trying to load weights from {load_weights_path}...")
@@ -509,76 +500,72 @@ def main():
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
-        seq = (
-            train.unbatch()
-            .skip(args.test_seq or np.random.randint(0, 1000))
-            .take(1)
-            .as_numpy_iterator()
-        )
-        seq = np.array([s for s in seq], dtype=object)
+        seq_idx = args.test_seq or np.random.randint(0, 1000)
+        seqs = (
+            train.unbatch().shuffle(seq_idx).take(5).as_numpy_iterator()
+        )  # it was skip(seq_idx) instead of shuffle(seq_idx)
+        seqs = np.array([s for s in seqs], dtype=object)
+        for s in range(len(seqs)):
+            seq = seqs[s : s + 1]
 
-        # uncomment this assignment to manually create a sequence
-        # note that arbitrarily created sequences will be harder to predict, since they don't follow any pattern found in the training data
-        # seq = np.array(
-        #     [
-        #         [
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #             ["172.31.1.6", "graph.facebook.com"],
-        #         ]
-        #     ],
-        #     dtype=object,
-        # )
+            mask = np.zeros_like(seq)
+            # place 1's where you want to replace tokens with <MASK>
+            # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
+            # example: mask[0, 1, 1]
+            #   always zero ^  ^  ^
+            #     second token |  |
+            #                     | domain
+            # mask[0, 0, -1] = 1
+            # mask[0, 1, -1] = 1
+            # mask[0, 2, -1] = 1
+            masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
-        mask = np.zeros_like(seq)
-        # place 1's where you want to replace tokens with <MASK>
-        # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
-        # example: mask[0, 1, 1]
-        #   always zero ^  ^  ^
-        #     second token |  |
-        #                     | domain
-        mask[0, 1, -1] = 1
+            pred, loss, kwout = model._predict(seq, mask)
+            print(f"Seq index: {seq_idx}")
 
-        masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
+            if args.finetune:
+                pred = np.array(pred).flatten()
+                for p, _ in enumerate(pred):
+                    domain = seq[0, p, 1]
+                    if type(domain) is bytes:
+                        domain = domain.decode("utf-8")
+                    label = seq[0, p, 2]
+                    if type(label) is bytes:
+                        label = label.decode("utf-8")
+                    print(
+                        f"{Fore.CYAN if kwout.get('in_fold')[p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
+                    )
+                print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
+            else:
+                pred = pred[0]
 
-        pred, loss = model._predict(seq, mask)
-        pred = pred[0]
+                for i in range(len(pred)):
+                    masked_host = model.inverse_hosts_lookup(
+                        model.hosts_lookup(masked_seq[0, i, 0])
+                    )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
+                    if type(masked_host) is bytes:
+                        masked_host = masked_host.decode("utf-8")
 
-        for i in range(len(pred)):
-            masked_host = model.inverse_hosts_lookup(
-                model.hosts_lookup(masked_seq[0, i, 0])
-            )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
-            if type(masked_host) is bytes:
-                masked_host = masked_host.decode("utf-8")
+                    domain = model.inverse_domains_lookup(
+                        model.domains_lookup(seq[0, i, 1])
+                    )
+                    if type(domain) is bytes:
+                        domain = domain.decode("utf-8")
 
-            domain = model.inverse_domains_lookup(model.domains_lookup(seq[0, i, 1]))
-            if type(domain) is bytes:
-                domain = domain.decode("utf-8")
+                    masked_domain = model.inverse_domains_lookup(
+                        model.domains_lookup(masked_seq[0, i, 1])
+                    )
+                    if type(masked_domain) is bytes:
+                        masked_domain = masked_domain.decode("utf-8")
 
-            masked_domain = model.inverse_domains_lookup(
-                model.domains_lookup(masked_seq[0, i, 1])
-            )
-            if type(masked_domain) is bytes:
-                masked_domain = masked_domain.decode("utf-8")
-
-            # predicted_token = domains_vocab[np.array(pred).argmax(axis=-1)[i]]
-            # domain_index = domains_vocab.index(domain)
-            predicted_token = model.inverse_domains_lookup(
-                np.array(pred).argmax(axis=-1)[i]
-            )
-            domain_index = model.domains_lookup(domain)
-            logger.info(
-                f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
-            )
-
-        logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
+                    predicted_token = model.inverse_domains_lookup(
+                        np.array(pred).argmax(axis=-1)[i]
+                    )
+                    domain_index = model.domains_lookup(domain)
+                    logger.info(
+                        f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
+                    )
+                logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
 
         sys.exit(0)
 
@@ -588,10 +575,10 @@ def main():
     # Save model weights
     save_weights_path = os.path.join(
         checkpoint_folder,
-        f"{os.path.splitext(checkpoint_name)[0]}{'.finetuned' * args.finetune}.h5",
+        f"{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * args.finetune}.h5",
     )
 
-    logger.debug("Starting model training...")
+    logger.info("Starting model training...")
     if not args.distribute:
         model.fit(
             x=train,
@@ -612,17 +599,16 @@ def main():
         num_batches = None
         for epoch in range(args.epochs):
             total_loss = 0.0
-            pbar = tqdm(
-                train,
-                total=num_batches,
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, ''{rate_inv_fmt} {postfix}]",
-            )
+            pbar = tqdm(train, total=num_batches)
+
             # Train loop
             current_batch = 0
             for x in pbar:
                 total_loss += model.distributed_train_step(x)
                 current_batch += 1
-                pbar.set_description(f"Train Loss: {total_loss / current_batch:.4f}")
+                pbar.set_description(
+                    f"[Epoch {epoch+1}/{args.epochs}] Train Loss: {total_loss / current_batch:.4f}"
+                )
 
             # Test loop
             for x in test:
@@ -635,13 +621,13 @@ def main():
 
             num_batches = current_batch
 
-    logger.debug(f"Model training completed.")
+    logger.info(f"Model training completed.")
 
     with dist_strategy.scope():  # not sure if the scope is needed
         model.save_weights(save_weights_path)
 
     # Save embeddings
-    if not os.path.exists("embeddings"):
+    if not os.path.exists("../embeddings"):
         os.makedirs("../embeddings")
     embeddings_folder = os.path.join(
         "../embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
@@ -654,17 +640,134 @@ def main():
     )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
     np.save(
         os.path.join(
-            embeddings_folder, f"emb-{os.path.splitext(checkpoint_name)[0]}.npy"
+            embeddings_folder,
+            f"emb-{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * args.finetune}.npy",
         ),
         domain_embeddings,
     )
 
-    logger.debug("Starting model evaluation...")
-    if not args.distribute:
-        model.evaluate(x=test, y=None, batch_size=args.bs)
-    else:  # TODO evaluate can't be used with DistributedDataset, have to loop manually
-        pass
-    logger.debug("Model evaluation completed.")
+    logger.info("Saving model predictions...")
+    if not args.finetune:
+        raise ValueError(
+            f"{Fore.RED}Saving model predictions can only be done in --finetune.{Style.RESET_ALL}"
+        )
+    elif args.distribute:
+        raise NotImplementedError(
+            f"{Fore.RED}Saving model predictions is not supported in --distribute.{Style.RESET_ALL}"
+        )  # TODO implement saving model predictions in --distribute
+
+    else:
+        # ISSUE should I evaluate on train, test or both? consider that in any case the model is never trained
+        # on in_fold domains, even on train. on the other hand, one may argue it's easier if the model has already
+        # seen that sequence. decide
+        # TODO make this algorithm more efficient, and possibly refactor it out
+        num_batches = sum([1 for _ in test])
+        d, trues, preds = (
+            np.zeros((num_batches * args.bs * args.seqlen), dtype=object),
+            np.zeros((num_batches * args.bs * args.seqlen)),
+            np.zeros((num_batches * args.bs * args.seqlen)),
+        )
+        batch_idx = 0
+        for x in tqdm(test):
+            domains = (
+                x[..., 1] if args.model == "DELM" else x[:, args.seqlen // 2, 0]
+            )  # (B,L) or (B,)
+            true = (
+                x[..., -1] if args.model == "DELM" else x[:, args.seqlen // 2, 1]
+            )  # (B,L) or (B,)
+            pred, _, kwout = model._predict(
+                x
+            )  # ( (B,L), (), (B,L) ) or ( (B,), (), (B,) )
+
+            domains_per_seq = (
+                args.seqlen
+                if args.model == "DELM"
+                else 1
+                if args.type == "CBOW"
+                else args.seqlen - 1
+            )
+            d[
+                batch_idx
+                * args.bs
+                * domains_per_seq : batch_idx
+                * args.bs
+                * domains_per_seq
+                + len(domains[kwout["in_fold"]])
+            ] = domains[kwout["in_fold"]]
+            trues[
+                batch_idx
+                * args.bs
+                * domains_per_seq : batch_idx
+                * args.bs
+                * domains_per_seq
+                + len(true[kwout["in_fold"]])
+            ] = true[kwout["in_fold"]]
+            preds[
+                batch_idx
+                * args.bs
+                * domains_per_seq : batch_idx
+                * args.bs
+                * domains_per_seq
+                + len(pred[kwout["in_fold"]])
+            ] = pred[kwout["in_fold"]]
+
+            batch_idx += 1
+        df = pd.DataFrame({"domains": d, "true": trues, "pred": preds})
+
+        df = df[df["domains"].notnull()]  # should be useless
+        df = df[df["domains"] != ""]  # should be useless
+        df = df[df["domains"] != 0]
+
+        predictions_path = f"../predictions/{args.model}/"
+        if args.type is not None:
+            predictions_path += f"{args.type}/"
+        if not os.path.exists(predictions_path):
+            os.makedirs(predictions_path)
+        df.to_csv(os.path.join(predictions_path, f"preds-fold{args.test_fold}.csv"))
+
+        # TODO I DON'T WANT TO COMPUTE METRICS HERE, IT SHOULD BE SEPARATE; HERE I ONLY SAVE PREDICTIONS
+
+        df["pred_hard"] = df["pred"].round()
+        # df["tp"] = np.logical_and(df["true"] == 1, df["pred_hard"] == 1)
+        # df["fp"] = np.logical_and(df["true"] == 0, df["pred_hard"] == 1)
+        # df["fn"] = np.logical_and(df["true"] == 1, df["pred_hard"] == 0)
+        # df["tn"] = np.logical_and(df["true"] == 0, df["pred_hard"] == 0)
+
+        # logger.info(
+        #     f"TP: {df['tp'].sum()}\nFP: {df['fp'].sum()}\nFN: {df['fn'].sum()}\nTN: {df['tn'].sum()}"
+        # )
+
+        logger.info(
+            f"SKlearn Confusion matrix:\n{sklearn.metrics.confusion_matrix(df['true'], df['pred_hard'], labels=[1,0])}"
+        )
+        auc = sklearn.metrics.roc_auc_score(df["true"], df["pred"])
+        fpr, tpr, _ = sklearn.metrics.roc_curve(df["true"], df["pred"])
+        logger.info(f"AUC: {auc}")
+        fig = plt.figure(figsize=(10, 10))
+        plt.plot(fpr, tpr, label=f"ROC fold {args.test_fold} (AUC = {auc:.2f})")
+        plt.legend(loc="lower right")
+        plt.savefig(
+            os.path.join(
+                predictions_path,
+                f"roc-{args.model}{f'-{args.type}' if args.type else ''}{f'-{args.test_fold}'}.png",
+            )
+        )
+        # logger.info(f"AUC: {sklearn.metrics.auc(fpr, tpr)}")
+        # display = sklearn.metrics.RocCurveDisplay.from_predictions(
+        #     df["true"], df["pred"]
+        # )
+        # print(thresholds)
+        # print(thresholds.shape)
+        # display.plot()
+        # plt.savefig("sklearnauc.png")
+        # plt.clf()
+
+        # fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(20, 10))
+        # ax1.plot(fpr)
+        # ax2.plot(tpr)
+        # fig.savefig("roc.png")
+
+    logger.info("Model predictions saved.")
 
 
 if __name__ == "__main__":

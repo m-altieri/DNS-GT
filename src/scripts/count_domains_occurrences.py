@@ -3,23 +3,23 @@ import os
 import matplotlib.pyplot as plt
 
 # Initialize
-domains_file = "../preprocessing/vocabs/all/domains_vocab.txt"
+domains_file = "../../data/vocabs/small/exp/domains_vocab.txt"
 with open(domains_file, "r") as f:
     domains = f.read().split("\n")
 domains = {d: 0 for d in domains}
 print("Domains loaded.")
 
 # Count
-queries_folder_train = "../preprocessing/arrays/all/queries/train"
+queries_folder_train = "../../data/arrays/small/queries/train"
 for query_file in os.listdir(queries_folder_train):
-    queries = np.load(os.path.join(queries_folder_train, query_file))
+    queries = np.load(os.path.join(queries_folder_train, query_file), allow_pickle=True)
     for q in queries:
         if q[1] in domains:
             domains[q[1]] += 1
     print(f"Finished analyzing {query_file}")
-queries_folder_test = "../preprocessing/arrays/all/queries/test"
+queries_folder_test = "../../data/arrays/small/queries/test"
 for query_file in os.listdir(queries_folder_test):
-    queries = np.load(os.path.join(queries_folder_test, query_file))
+    queries = np.load(os.path.join(queries_folder_test, query_file), allow_pickle=True)
     for q in queries:
         if q[1] in domains:
             domains[q[1]] += 1

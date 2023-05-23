@@ -123,20 +123,28 @@ class DELM(tf.keras.Model):
         #     block.set_trainable(True)
         self.masked_classifier.trainable = True
         self.binary_classifier.trainable = False
-        self.frozen = False
+        self.finetuning = False
 
     def finetune(self):
-        self.domain_embeddings.trainable = False
-        self.host_embeddings.trainable = False
-        # FIXME Now I'm not disabling the block weights, but I should
-        # the problem is that disabling the block weights causes problems
-        # when it comes to loading finetuning weights in distributed mode
-        # (now the workaround is using stop_gradient() in call())
-        # for block in self.blocks:
-        #     block.set_trainable(False)
+        if self.conf.get("freeze") is None:
+            raise ValueError(
+                "When finetuning the model, the freeze attribute must be set. Now it is None."
+            )
+
+        if self.conf.get("freeze"):
+            self.domain_embeddings.trainable = False
+            self.host_embeddings.trainable = False
+            # FIXME Now I'm not disabling the block weights, but I should
+            # the problem is that disabling the block weights causes problems
+            # when it comes to loading finetuning weights in distributed mode
+            # (now the workaround is using stop_gradient() in call())
+            # for block in self.blocks:
+            #     block.set_trainable(False)
+            self._logger.info("Freezing layers.")
+
         self.masked_classifier.trainable = False
         self.binary_classifier.trainable = True
-        self.frozen = True
+        self.finetuning = True
 
     def __init__(self, conf):
         super(DELM, self).__init__()
@@ -175,7 +183,7 @@ class DELM(tf.keras.Model):
                 f"Initializing model with distribution strategy: {self.dist_strategy}"
             )
 
-        self.frozen = False
+        self.finetuning = False
         self.initialize = True  # NOTE if this is a tf.Variable(True), and i modify it with .assign(), the weights won't save
 
         # TensorBoard Init
@@ -216,6 +224,15 @@ class DELM(tf.keras.Model):
             self._logger.critical(
                 f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
             )
+
+        if self.conf.get("test_fold") is not None:
+            fold = np.load(
+                os.path.join(
+                    self.conf.get("test_folds_path"),
+                    f"fold-{self.conf.get('test_fold')}.npy",
+                )
+            )
+            self.test_fold = tf.constant(fold)
 
         self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
         self.domains_vocabulary = tf.constant(self.domains_vocabulary)
@@ -276,7 +293,11 @@ class DELM(tf.keras.Model):
         self.masked_classifier = FF(
             [self.ndomains], ["softmax"]
         )  # Softmax masking classifier
-        self.binary_classifier = FF([1], ["sigmoid"])  # Binary classifier
+
+        self.binary_classifier = FF([1], ["sigmoid"])
+        # self.binary_classifier = FF(
+        #     [self.conf["dim"] // 4, 1], ["linear", "sigmoid"]
+        # )  # Binary classifier
 
     @tf.function
     def call(self, inputs, training=None, **kwargs):
@@ -296,7 +317,7 @@ class DELM(tf.keras.Model):
             mask_p,
             same_p,
             random_p,
-            prevent_masking=(not training or self.frozen)
+            prevent_masking=(not training or self.finetuning)
             and not kwargs.get(
                 "force_masking"
             ),  # test_step() è training=False, ma ha comunque bisogno del masking
@@ -326,7 +347,7 @@ class DELM(tf.keras.Model):
 
         # Forward embeddings through MHGAT blocks
         for block in self.blocks:
-            if self.frozen:
+            if self.finetuning and self.conf.get("freeze"):
                 emb = tf.stop_gradient(
                     block(emb, adj_h, step=self.step)
                 )  # workaround for the (--load, --gpu all) finetuned bug
@@ -340,17 +361,18 @@ class DELM(tf.keras.Model):
 
         # softmax = self.masked_classifier(emb)
         # c = self.binary_classifier(emb)
-        # return softmax if not self.frozen else c, mask
+        # return softmax if not self.finetuning else c, mask
 
         if self.initialize:  # force initialization of all weights
             res = self.masked_classifier(emb)
             res = self.binary_classifier(emb)
             self.initialize = False
 
-        if not self.frozen:
+        if not self.finetuning:
             res = self.masked_classifier(emb)
         else:
-            res = self.binary_classifier(emb)
+            res = tf.nn.dropout(emb, 0.2)
+            res = self.binary_classifier(res)
         return res, mask
 
     # UNUSED
@@ -385,22 +407,38 @@ class DELM(tf.keras.Model):
         return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
     def train_step(self, seq):
-        if self.frozen:
+        if self.finetuning:
             seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)  # [B,L]
 
         with tf.GradientTape() as tape:
-            pred, mask = self(seq, training=True)  # [B,L,vsize], [B,L]
+            pred, mask = self(
+                seq, training=True
+            )  # ([B,L,vsize], [B,L]) oppure ([B,L,1], idk;idc)
 
-            if not self.frozen:
+            if not self.finetuning:
                 loss = self.compiled_loss(
                     tf.boolean_mask(domain_indexes, mask),
                     tf.boolean_mask(pred, mask),
                     regularization_losses=self.losses,
                 )
             else:
-                loss = self.compiled_loss(tf.squeeze(pred), y)
+                pred = tf.squeeze(pred, axis=-1)
+
+                if self.conf.get("test_fold") is not None:
+                    in_fold = tf.math.reduce_any(
+                        tf.equal(
+                            tf.expand_dims(seq[:, :, 1], axis=-1),
+                            self.test_fold,
+                        ),
+                        axis=-1,
+                    )
+
+                loss = self.compiled_loss(
+                    tf.boolean_mask(y, ~in_fold), tf.boolean_mask(pred, ~in_fold)
+                )
+
             if self.distributed:
                 # TODO Check that the distributed loss is calculated correctly,
                 # especially considering that tf.size(loss) is different every time and a bit random
@@ -428,7 +466,7 @@ class DELM(tf.keras.Model):
         return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
     def test_step(self, seq):
-        if self.frozen:
+        if self.finetuning:
             seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
         domains = tf.squeeze(self.slice_domains(seq), axis=-1)
         domain_indexes = self.domains_lookup(domains)
@@ -437,14 +475,27 @@ class DELM(tf.keras.Model):
             seq, training=False, force_masking=True
         )  # without force_masking, we have no test loss
 
-        if not self.frozen:
+        if not self.finetuning:
             loss = self.compiled_loss(
                 tf.boolean_mask(domain_indexes, mask),
                 tf.boolean_mask(pred, mask),
                 regularization_losses=self.losses,
             )
         else:
-            loss = self.compiled_loss(tf.squeeze(pred), y)
+            pred = tf.squeeze(pred, axis=-1)
+
+            if self.conf.get("test_fold") is not None:
+                in_fold = tf.math.reduce_any(
+                    tf.equal(
+                        tf.expand_dims(seq[:, :, 1], axis=-1),
+                        self.test_fold,
+                    ),
+                    axis=-1,
+                )
+
+            loss = self.compiled_loss(
+                tf.boolean_mask(y, in_fold), tf.boolean_mask(pred, in_fold)
+            )
 
         if self.distributed:
             # TODO Check that the distributed loss is calculated correctly,
@@ -463,25 +514,45 @@ class DELM(tf.keras.Model):
         # Return a dict mapping metric names to current value
         return loss if self.distributed else {m.name: m.result() for m in self.metrics}
 
-    def _predict(self, seq, mask):
-        mask = tf.constant(mask, dtype=tf.bool)
-        domains_mask = tf.squeeze(self.slice_domains(mask), axis=-1)
+    def _predict(self, seq, mask=None):
+        kwout = {}
+        if self.finetuning:
+            seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
+            pred, _ = self(seq, training=False)
+            pred = tf.squeeze(pred, axis=-1)
 
-        masked_seq = tf.where(mask, tf.fill(tf.shape(seq), "<MASK>"), seq)
-        pred, _ = self(masked_seq, training=False)
+            if self.conf.get("test_fold") is not None:
+                in_fold = tf.math.reduce_any(
+                    tf.equal(
+                        tf.expand_dims(seq[:, :, 1], axis=-1),
+                        self.test_fold,
+                    ),
+                    axis=-1,
+                )
 
-        domains = tf.squeeze(
-            self.slice_domains(seq), axis=-1
-        )  # there was a bug here. it's important to get domain indexes from the NON-masked sequence
-        domain_indexes = self.domains_lookup(domains)
+            loss = self.compiled_loss(
+                tf.boolean_mask(y, in_fold), tf.boolean_mask(pred, in_fold)
+            )
+            kwout["in_fold"] = tf.squeeze(in_fold)
 
-        loss = self.compiled_loss(
-            tf.boolean_mask(domain_indexes, domains_mask),
-            tf.boolean_mask(pred, domains_mask),
-            regularization_losses=self.losses,
-        )
+        else:
+            mask = tf.constant(mask, dtype=tf.bool)
+            domains_mask = tf.squeeze(self.slice_domains(mask), axis=-1)
 
-        return pred, loss
+            masked_seq = tf.where(mask, tf.fill(tf.shape(seq), "<MASK>"), seq)
+            pred, _ = self(masked_seq, training=False)
+
+            domains = tf.squeeze(
+                self.slice_domains(seq), axis=-1
+            )  # there was a bug here. it's important to get domain indexes from the NON-masked sequence
+            domain_indexes = self.domains_lookup(domains)
+            loss = self.compiled_loss(
+                tf.boolean_mask(domain_indexes, domains_mask),
+                tf.boolean_mask(pred, domains_mask),
+                regularization_losses=self.losses,
+            )
+
+        return pred, loss, kwout
 
 
 class MHGAT_Block(tf.keras.layers.Layer):

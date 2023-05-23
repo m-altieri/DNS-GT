@@ -1,17 +1,12 @@
 dim: 128
-domains_vocab_path: 'preprocessing/vocabs/small/exp/domains_vocab.txt'
-hosts_vocab_path: 'preprocessing/vocabs/small/exp/hosts_vocab.txt'
-# Try starting with a higher "same" probability
-# and lowering it gradually in favor of "mask" probability
-# mask_p:
-#     mask: 0.12
-#     same: 0.015
-#     random: 0.015
+domains_vocab_path: "../data/vocabs/small/exp/domains_vocab.txt"
+hosts_vocab_path: "../data/vocabs/small/exp/hosts_vocab.txt"
+test_folds_path: "../data/vocabs/small/exp/test_folds5"
 mask_p:
-    mask: 0.08
-    same: 0.01
-    random: 0.01
+  mask: 0.06
+  same: 0.03
+  random: 0.01
 n_heads: 8
 omega: 0.75
-blocks: 4
+blocks: 3
 quick_tb: false

@@ -1,15 +1,30 @@
-import tensorflow as tf
-import yaml
-from colorama import Fore, Style
-import sys
-import numpy as np
-import logging
 import os
+import sys
+import yaml
+import logging
+import numpy as np
+import tensorflow as tf
 from datetime import datetime
+from colorama import Fore, Style
 from utils.distribute import DummyStrategy
 
 
 class Word2Vec(tf.keras.Model):
+    def pretrain(self):
+        self.domain_embeddings.trainable = True
+        self.hidden.trainable = True
+        self.out.trainable = True
+        self.classifier.trainable = False
+        self.finetuning = False
+
+    def finetune(self):
+        freeze = self.conf.get("freeze", False)
+        self.domain_embeddings.trainable = not freeze
+        self.hidden.trainable = not freeze
+        self.out.trainable = not freeze
+        self.classifier.trainable = True
+        self.finetuning = True
+
     def __init__(self, conf):
         super(Word2Vec, self).__init__()
 
@@ -34,7 +49,18 @@ class Word2Vec(tf.keras.Model):
             if conf[key] is not None:
                 self.conf[key] = conf[key]
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
-        self.frozen = False
+        self.finetuning = False
+
+        if (
+            self.conf.get("test_fold") is not None
+        ):  # TODO the whole test folds thing should be refactored out
+            fold = np.load(
+                os.path.join(
+                    self.conf.get("test_folds_path"),
+                    f"fold-{self.conf.get('test_fold')}.npy",
+                )
+            )
+            self.test_fold = tf.constant(fold)
 
         # Distribution
         self.dist_strategy = self.conf.get("dist_strategy", DummyStrategy)
@@ -60,7 +86,7 @@ class Word2Vec(tf.keras.Model):
             self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
-        # <--- TODO this is copied; make it external
+        # TODO <--- this is copied; make it external
         self.domains_vocabulary = (
             open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
         )
@@ -95,20 +121,6 @@ class Word2Vec(tf.keras.Model):
         self.out = tf.keras.layers.Dense(self.ndomains)
         self.classifier = tf.keras.layers.Dense(1, activation="sigmoid")
 
-    def pretrain(self):
-        self.domain_embeddings.trainable = True
-        self.hidden.trainable = True
-        self.out.trainable = True
-        self.classifier.trainable = False
-        self.frozen = False
-
-    def finetune(self, freeze_weights=True):
-        self.domain_embeddings.trainable = not freeze_weights
-        self.hidden.trainable = not freeze_weights
-        self.out.trainable = not freeze_weights
-        self.classifier.trainable = True
-        self.frozen = True
-
     @tf.function
     def call(self, inputs):
         target_idx, context_idx = inputs
@@ -117,7 +129,17 @@ class Word2Vec(tf.keras.Model):
         context_embs = self.domain_embeddings(context_idx)
 
         if self.conf["type"] == "CBOW":  # for CBOW, x is the context, y is the target
-            context_emb = tf.math.reduce_sum(context_embs, axis=1)
+            if (
+                self.finetuning
+            ):  # if finetuning, the model can see the target too because it doesn't have to reconstruct it
+                context_emb = tf.math.reduce_sum(
+                    tf.concat(
+                        [context_embs, tf.expand_dims(target_embs, axis=1)], axis=1
+                    ),
+                    axis=1,
+                )
+            else:
+                context_emb = tf.math.reduce_sum(context_embs, axis=1)
             hidden = self.hidden(context_emb)
         elif (
             self.conf["type"] == "SkipGram"
@@ -128,7 +150,7 @@ class Word2Vec(tf.keras.Model):
         out = tf.nn.softmax(out)
         c = self.classifier(hidden)
 
-        return out if not self.frozen else c
+        return out if not self.finetuning else c
 
     @tf.function
     def distributed_train_step(self, seq):
@@ -155,32 +177,46 @@ class Word2Vec(tf.keras.Model):
         with tf.GradientTape() as tape:
             pred = self((target_indexes, context_indexes), training=True)  # [B,vsize]
 
+            if self.conf.get("test_fold") is not None:
+                in_fold = tf.math.reduce_any(
+                    tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+                    axis=-1,
+                )
+
             if self.conf["type"] == "CBOW":
                 label = (
                     target_indexes
-                    if not self.frozen
+                    if not self.finetuning
                     else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
                 )
-                self._logger.critical(label)
-                self._logger.critical(pred)
-                loss = self.compiled_loss(
-                    label,
-                    pred,
-                    regularization_losses=self.losses,
-                )
-            elif (
-                self.conf["type"] == "SkipGram"
-            ):  # TODO finetuning is still not implemented on SkipGram
-                loss = tf.reduce_mean(
-                    tf.map_fn(
-                        lambda e: self.compiled_loss(
-                            e, pred, regularization_losses=self.losses
+                if self.finetuning:
+                    loss = self.compiled_loss(
+                        tf.boolean_mask(label, ~in_fold),
+                        tf.boolean_mask(pred, ~in_fold),
+                        regularization_losses=self.losses,
+                    )
+                else:
+                    loss = self.compiled_loss(
+                        label, pred, regularization_losses=self.losses
+                    )
+            elif self.conf["type"] == "SkipGram":
+                if self.finetuning:
+                    loss = self.compiled_loss(
+                        tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[~in_fold],
+                        tf.squeeze(pred, axis=-1)[~in_fold],
+                        regularization_losses=self.losses,
+                    )
+                else:
+                    loss = tf.reduce_mean(
+                        tf.map_fn(
+                            lambda e: self.compiled_loss(
+                                e, pred, regularization_losses=self.losses
+                            ),
+                            tf.transpose(context_indexes),  # [L,B]
+                            fn_output_signature=tf.float32,
                         ),
-                        tf.transpose(context_indexes),  # [L,B]
-                        fn_output_signature=tf.float32,
-                    ),
-                    axis=-1,
-                )  # [B]
+                        axis=-1,
+                    )  # [B]
 
             if self.distributed:
                 loss = tf.math.divide(
@@ -217,28 +253,45 @@ class Word2Vec(tf.keras.Model):
 
         pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
 
+        if self.conf.get("test_fold") is not None:
+            in_fold = tf.math.reduce_any(
+                tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+                axis=-1,
+            )
         if self.conf["type"] == "CBOW":
             label = (
                 target_indexes
-                if not self.frozen
+                if not self.finetuning
                 else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
             )
-            loss = self.compiled_loss(
-                label,
-                pred,
-                regularization_losses=self.losses,
-            )
+            if self.finetuning:
+                loss = self.compiled_loss(
+                    tf.boolean_mask(label, in_fold),
+                    tf.boolean_mask(pred, in_fold),
+                    regularization_losses=self.losses,
+                )
+            else:
+                loss = self.compiled_loss(
+                    label, pred, regularization_losses=self.losses
+                )
         elif self.conf["type"] == "SkipGram":
-            loss = tf.reduce_mean(
-                tf.map_fn(
-                    lambda e: self.compiled_loss(
-                        e, pred, regularization_losses=self.losses
+            if self.finetuning:
+                loss = self.compiled_loss(
+                    tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[in_fold],
+                    tf.squeeze(pred, axis=-1)[in_fold],
+                    regularization_losses=self.losses,
+                )
+            else:
+                loss = tf.reduce_mean(
+                    tf.map_fn(
+                        lambda e: self.compiled_loss(
+                            e, pred, regularization_losses=self.losses
+                        ),
+                        tf.transpose(context_indexes),  # [L,B]
+                        fn_output_signature=tf.float32,
                     ),
-                    tf.transpose(context_indexes),  # [L,B]
-                    fn_output_signature=tf.float32,
-                ),
-                axis=-1,
-            )  # [B]
+                    axis=-1,
+                )  # [B]
 
         if self.distributed:
             loss = tf.math.divide(
@@ -251,6 +304,75 @@ class Word2Vec(tf.keras.Model):
 
         # Return a dict mapping metric names to current value
         return loss if self.distributed else {m.name: m.result() for m in self.metrics}
+
+    def _predict(self, seq):
+        kwout = {}
+
+        # seq: [B,L,1] or [B,L,2] se --ft
+        L = tf.shape(seq)[1]
+
+        target_domains = seq[:, L // 2, 0]
+        context_domains = tf.concat(
+            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+        )
+
+        target_indexes = self.domain_lookup(target_domains)
+        context_indexes = self.domain_lookup(context_domains)
+
+        pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
+        pred = tf.squeeze(pred, axis=-1)
+
+        if self.conf.get("test_fold") is not None:
+            in_fold = tf.math.reduce_any(
+                tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+                axis=-1,
+            )
+            kwout["in_fold"] = tf.squeeze(in_fold)
+        if self.conf["type"] == "CBOW":
+            label = (
+                target_indexes
+                if not self.finetuning
+                else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
+            )
+            if self.finetuning:
+                loss = self.compiled_loss(
+                    tf.boolean_mask(label, in_fold),
+                    tf.boolean_mask(pred, in_fold),
+                    regularization_losses=self.losses,
+                )
+            else:
+                loss = self.compiled_loss(
+                    label, pred, regularization_losses=self.losses
+                )
+        elif self.conf["type"] == "SkipGram":
+            if self.finetuning:
+                loss = self.compiled_loss(
+                    tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[in_fold],
+                    pred[in_fold],
+                    regularization_losses=self.losses,
+                )
+            else:
+                loss = tf.reduce_mean(
+                    tf.map_fn(
+                        lambda e: self.compiled_loss(
+                            e, pred, regularization_losses=self.losses
+                        ),
+                        tf.transpose(context_indexes),  # [L,B]
+                        fn_output_signature=tf.float32,
+                    ),
+                    axis=-1,
+                )  # [B]
+
+        if self.distributed:
+            loss = tf.math.divide(
+                tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+            )
+
+        if self.conf.get("tensorboard"):
+            with self.tb_writer.as_default():
+                tf.summary.scalar("val_loss", loss, step=self.step)
+
+        return pred, None, kwout
 
     @staticmethod
     def create_pairs(seq, seqlen):

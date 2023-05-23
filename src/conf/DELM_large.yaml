@@ -1,10 +1,10 @@
 dim: 768
-domains_vocab_path: '../data/vocabs/all/exp/domains_vocab.txt'
-hosts_vocab_path: '../data/vocabs/all/exp/hosts_vocab.txt'
+domains_vocab_path: "../data/vocabs/all/exp/domains_vocab.txt"
+hosts_vocab_path: "../data/vocabs/all/exp/hosts_vocab.txt"
 mask_p:
-    mask: 0.075
-    same: 0.015
-    random: 0.01
+  mask: 0.07
+  same: 0.02
+  random: 0.01
 n_heads: 12
 omega: 1.0
 blocks: 12

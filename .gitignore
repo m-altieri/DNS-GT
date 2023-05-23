@@ -10,3 +10,5 @@ src/scripts/*
 !src/scripts/*.py
 src/visualizations/*
 !src/visualizations/*.py
+predictions/*
+!predictions/*.csv

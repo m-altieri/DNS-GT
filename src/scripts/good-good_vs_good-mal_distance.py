@@ -12,9 +12,9 @@ def cos_sim(a, b):
 
 
 # Load
-embeddings_path = "../embeddings/embeddings-increasingmasking.npy"
+embeddings_path = "../../embeddings/embeddings-increasingmasking.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "../preprocessing/vocabs/small/domains_vocab.txt"
+domains_path = "../../data/vocabs/small/domains_vocab.txt"
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
@@ -113,7 +113,7 @@ plt.figure(figsize=(5, 2.5))
 plt.plot(avg_cc_eucl_dist, color="blue", label="Common domains")
 plt.plot(avg_cm_eucl_dist, color="red", label="Malicious domains")
 plt.xlabel("Common domains")
-plt.ylabel("Cosine similarity")
+plt.ylabel("Euclidean distance")
 plt.subplots_adjust(bottom=0.2)
 plt.legend()
 
@@ -124,7 +124,7 @@ plt.plot(avg_cc_cos_sim, color="blue", label="Common domains")
 plt.plot(avg_cm_cos_sim, color="red", label="Malicious domains")
 plt.legend()
 plt.xlabel("Common domains")
-plt.ylabel("Euclidean distance")
+plt.ylabel("Cosine similarity")
 plt.subplots_adjust(bottom=0.2)
 plt.savefig("c_cos.png")
 

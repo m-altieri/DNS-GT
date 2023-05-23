@@ -5,8 +5,8 @@ import sys
 import os
 
 
-small_domains_path = "../preprocessing/vocabs/small/domains_vocab.txt"
-all_domains_path = "../preprocessing/vocabs/all/domains_vocab.txt"
+small_domains_path = "../../data/vocabs/small/domains_vocab.txt"
+all_domains_path = "../../data/vocabs/all/domains_vocab.txt"
 blacklist_paths = "../../blacklists"
 
 with open(small_domains_path, "r") as f:

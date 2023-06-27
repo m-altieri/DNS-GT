@@ -7,7 +7,7 @@ PATH = "/mnt/storage15/TI-2016/csv"
 
 for csv in os.listdir(PATH):
     print("Analyzing", csv)
-    df = pd.read_csv("/mnt/storage15/TI-2016/csv/20160501_051543.csv", delimiter=";")
+    df = pd.read_csv(os.path.join(PATH, csv), delimiter=";")
 
     ips = df["ip.src"].unique()
     requests, responses, is_resolver = [], [], []

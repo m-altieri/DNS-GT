@@ -364,9 +364,12 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
+    logger.info(f"{Fore.YELLOW}Ignoring --version and setting it to `all`{Fore.RESET}")
     queries_path = (
-        "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
-    )  # "../data/"
+        "../data/from_original/arrays/queries"  # TODO split into small and all versions
+        # "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
+        # "../data/"
+    )
     domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
 
@@ -425,7 +428,7 @@ def main():
         )  # initializing MirroredStrategy with None uses all gpus
         dist_strategy = tf.distribute.MirroredStrategy(gpus)
         logger.warning(
-            f"{Fore.YELLOW}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
+            f"{Fore.BLUE}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
         )
 
         # Data Config
@@ -489,7 +492,7 @@ def main():
             logger.info(f"Model weights loaded from {load_weights_path}.")
         except Exception as e:
             logger.error(
-                f"{Fore.RED}Exception when trying to load checkpoint {load_weights_path}:\n{Style.DIM}{e}"
+                f"{Fore.YELLOW}Exception when trying to load checkpoint {load_weights_path}:\n{Style.DIM}{e}"
                 + f"\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
             )
             checkpoint_name = default_checkpoint(args)
@@ -515,9 +518,9 @@ def main():
             #   always zero ^  ^  ^
             #     second token |  |
             #                     | domain
-            # mask[0, 0, -1] = 1
-            # mask[0, 1, -1] = 1
-            # mask[0, 2, -1] = 1
+            mask[0, 0, -1] = 1
+            mask[0, 1, -1] = 1
+            mask[0, 2, -1] = 1
             masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
 
             pred, loss, kwout = model._predict(seq, mask)
@@ -649,11 +652,11 @@ def main():
     logger.info("Saving model predictions...")
     if not args.finetune:
         raise ValueError(
-            f"{Fore.RED}Saving model predictions can only be done in --finetune.{Style.RESET_ALL}"
+            f"{Fore.YELLOW}Saving model predictions can only be done in --finetune.{Style.RESET_ALL}"
         )
     elif args.distribute:
         raise NotImplementedError(
-            f"{Fore.RED}Saving model predictions is not supported in --distribute.{Style.RESET_ALL}"
+            f"{Fore.YELLOW}Saving model predictions is not supported in --distribute.{Style.RESET_ALL}"
         )  # TODO implement saving model predictions in --distribute
 
     else:

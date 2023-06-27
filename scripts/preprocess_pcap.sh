@@ -22,6 +22,7 @@ do
      -e ip.dst \
      -e udp.srcport \
      -e udp.dstport \
+     -e dns.id \
      -e dns.retransmission \
      -e dns.qry.name \
      -e dns.qry.type \

@@ -1,3 +1,15 @@
+
+# TI-2016 Scapy Network Node Distribution
+
+PCAP File `20160424_055409.pcap`
+___
+
+## Load PCAP file
+```python
+>>> pcap = rdpcap('~/datasets/TI-2016-Partial/Day0_24_04_2016/20160424_055409.pcap')
+```
+
+## Classification of nodes based on query/response and send/receive
 ```python
 >>> Aqs = set([p['IP'].src for p in pcap if 'UDP' in p and p['UDP'].dport == 53])
 >>> len(Aqs)
@@ -22,6 +34,7 @@
 40
 ```
 
+## Classification of nodes based on Hosts / Servers
 ```python
 >>> Servers = Aqr | Ars
 ```
@@ -50,6 +63,7 @@
 38
 ```
 
+## Classification of nodes based on activity
 List of IPs that sent at least a direct query from Hqs to Eqr (in Hqs):
 ```python
 >>> set([p['IP'].src for p in pcap if 'UDP' in p and p['UDP'].dport == 53 and p['IP'].src in Hqs and p['IP'].dst in Eqr])

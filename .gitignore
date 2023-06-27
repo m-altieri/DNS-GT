@@ -1,4 +1,5 @@
 *.pyc
+*.csv
 data/arrays/*
 data/vocabs/*
 tensorboard/*

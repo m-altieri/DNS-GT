@@ -9,10 +9,10 @@ from colorama import Fore, Style
 # parse arguments
 argparser = argparse.ArgumentParser()
 argparser.add_argument(
-    "--queries_folder",
+    "--queries-folder",
     default="/mnt/storage15/TI-2016-preprocessed/arrays/all/queries/train",
 )
-argparser.add_argument("--output_folder", default="vocabs/all/exp/")
+argparser.add_argument("--output-folder", default="vocabs/all/exp/")
 args = argparser.parse_args()
 
 # initialize hosts and domains

@@ -127,7 +127,7 @@ def parse_args():
     argparser.add_argument(
         "--version",
         action="store",
-        choices=["small", "all"],
+        choices=["small", "all", "clean"],  # TODO clean should become the normal one
         default="small",
         help="Version of the dataset used.",
     )
@@ -364,15 +364,18 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    logger.info(f"{Fore.YELLOW}Ignoring --version and setting it to `all`{Fore.RESET}")
-    queries_path = (
-        "../data/from_original/arrays/queries"  # TODO split into small and all versions
+    logger.info(
+        f"{Fore.YELLOW}Ignoring --version and setting it to `clean`{Fore.RESET}"
+    )
+    args.version = "clean"
+    queries_path = {
+        "clean": "preprocessing/clean_arrays/queries"
+        # "../data/from_original/arrays/queries"  # TODO split into small and all versions
         # "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
         # "../data/"
-    )
+    }[args.version]
     domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
-
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
 

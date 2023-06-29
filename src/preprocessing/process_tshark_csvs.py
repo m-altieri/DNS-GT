@@ -1,9 +1,14 @@
+# -*- coding: utf-8 -*-
+"""Preprocessing PCAP files.
+
+Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
+Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
+"""
 import os
-import sys
-import numpy as np
+from pathlib import Path
 import pandas as pd
 
-PATH = "/mnt/storage15/TI-2016/csv"
+PATH = Path("/mnt/storage15/TI-2016/csv")
 OUTPUT_FOLDER = "clean_csvs"
 
 for csv in os.listdir(PATH):

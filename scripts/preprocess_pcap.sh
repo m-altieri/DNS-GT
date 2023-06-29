@@ -1,12 +1,10 @@
 #!/bin/sh
 # Preprocessing of PCAP files
-
-
-# Column names
-
+#
+# Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
+# Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
 
 echo "Conversion of PCAP into CSV"
-
 
 mkdir -p $1/csv
 for infilename in `find $1 -name '*.pcap' -type f`;
@@ -34,4 +32,3 @@ do
 
     echo Saved as $1/csv/$outfilename
 done
-

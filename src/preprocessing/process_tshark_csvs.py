@@ -1,63 +1,260 @@
 # -*- coding: utf-8 -*-
-"""Preprocessing PCAP files.
+"""Preprocessing of CSV files after conversion with `tshark`.
+
+The preprocessing applies the fo
+
+Definitions
+-----------
+
+request:
+    DNS packet with destination port equal to 53
+response:
+    DNS packet with source port equal to 53
+resolver
+    - IP with packets sent 
+
+Valid IPs are sorted as follows:
+    - at least 100 requests for the current hour,
+    - a ratio of requests to responses between 0.985 and 1.015,
+    - not dns resolvers 
+
 
 Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
 Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
 """
-import os
-from pathlib import Path
+import sys
 import pandas as pd
+from datetime import datetime
 
-PATH = Path("/mnt/storage15/TI-2016/csv")
-OUTPUT_FOLDER = "clean_csvs"
+from tacks.utils.base import Workspace, get_argparser, get_config
 
-for csv in os.listdir(PATH):
-    print("Analyzing", csv)
-    df = pd.read_csv(os.path.join(PATH, csv), delimiter=";")
+# -- Argument Parser and Workspace
 
-    ips = df["ip.src"].unique()
-    requests, responses, is_resolver = [], [], []
+argparser = get_argparser(
+    sys.modules[__name__].__doc__,
+    flags=["debug", "silent"],
+)
 
-    # calculate, for each unique ip within the current hour, its number of requests,
-    # responses, and whether it is a resolver
-    for ip in ips:
-        requests.append(len(df[(df["ip.src"] == ip) & (df["udp.dstport"] == 53)]))
-        responses.append(len(df[(df["ip.dst"] == ip) & (df["udp.srcport"] == 53)]))
-        is_resolver.append(
-            not df[(df["ip.src"] == ip) & (df["udp.srcport"] == 53)].empty
-            or not df[(df["ip.dst"] == ip) & (df["udp.dstport"] == 53)].empty
-        )
-    ip_info = pd.DataFrame(
-        {
-            "ip": ips,
-            "requests": requests,
-            "responses": responses,
-            "is_resolver": is_resolver,
+args = argparser.parse_args()
+args.force = True
+
+workspace = Workspace(name="PCAP_Dataset", instance_name="Preprocessing", args=args)
+config = get_config()
+
+
+# -- Data
+data_path = config.get_path("paths", "data") / "TI-2016"
+tcsv_path = data_path / "tcsv"
+
+csv_path = data_path / "csv"
+csv_path.mkdir(exist_ok=True)
+
+# -- Preprocessing
+for tcsvfile_path in tcsv_path.glob("*.csv"):
+    workspace.logger.info(f"Analysing {tcsvfile_path}...")
+
+    # get file name
+    filename = tcsvfile_path.name
+
+    # check whether the file was already pre-processed
+    if (csv_path / filename).exists():
+        workspace.logger.info("Already preprocessed tshark CSV. Skipped.")
+        continue
+
+    # load packets with pandas
+    packets = pd.read_csv(str(tcsvfile_path), delimiter=";", on_bad_lines="skip")
+
+    # renaming column names
+    packets = packets.rename(
+        columns={
+            "frame.number": "frame_id",
+            "frame.time_epoch": "timestamp",
+            "ip.src": "ip_src",
+            "ip.dst": "ip_dst",
+            "udp.srcport": "port_src",
+            "udp.dstport": "port_dst",
+            "dns.id": "id",
+            "dns.retransmission": "is_retransmission",
+            "dns.qry.name": "qry_name",
+            "dns.qry.type": "qry_type",
+            "dns.flags.response": "is_response",
+            "dns.resp.name": "resp_names",
+            "dns.resp.type": "resp_types",
+            "dns.flags.rcode": "rcode",
         }
     )
-    ip_info.to_csv("ip_info.csv")
 
-    # good_ips are ips having at least 100 requests for the current hour,
-    # having a ratio of requests to responses between 0.985 and 1.015,
-    # and that are not dns resolvers (never sent a response and never received a query)
-    good_ips = ip_info[
-        (ip_info["requests"] > 100)
-        & (ip_info["requests"] / ip_info["responses"] > 0.985)
-        & (ip_info["requests"] / ip_info["responses"] < 1.015)
+    # fill missing values
+    packets = packets.fillna(
+        {"port_src": -1, "port_dst": -1, "qry_type": -1, "is_retransmission": 0}
+    )
+
+    # define type of known fields
+    packets = packets.astype(
+        {
+            "frame_id": int,
+            "timestamp": float,
+            "port_src": int,
+            "port_dst": int,
+            "qry_type": int,
+            "is_response": bool,
+            "is_retransmission": bool,
+        }
+    )
+
+    # remove queries with missing name
+    packets.dropna(subset=["qry_name"], inplace=True)
+
+    # set the time origin to Day 0 00:00
+    packets["timestamp"] -= datetime(2016, 4, 24, 0, 0, 0).timestamp()
+
+    # convert query types
+    packets["qry_type"] = packets["qry_type"].astype(int)
+    packets["qry_type"].replace(
+        to_replace={
+            -1: "NA",
+            0: "NA",
+            1: "A",
+            2: "NS",
+            5: "CNAME",
+            6: "SOA",
+            12: "PTR",
+            15: "MX",
+            16: "TXT",
+            28: "AAAA",
+            33: "SRV",
+            43: "DS",
+            48: "DNSKEY",
+            255: "*",
+        },
+        inplace=True,
+    )
+
+    # get unique IPS
+    ips = packets["ip_src"].unique().tolist()
+
+    # get number of requests and responses per IP
+    packets_by_ipsrc = packets.groupby("ip_src")
+    packets_by_ipdst = packets.groupby("ip_dst")
+
+    n_requests_sent = packets_by_ipsrc.apply(lambda g: (g["port_dst"] == 53).sum())
+    n_responses_sent = packets_by_ipsrc.apply(lambda g: (g["port_src"] == 53).sum())
+
+    n_requests_received = packets_by_ipdst.apply(lambda g: (g["port_dst"] == 53).sum())
+    n_responses_received = packets_by_ipdst.apply(lambda g: (g["port_src"] == 53).sum())
+
+    ip_info = (
+        pd.concat(
+            [
+                n_requests_sent,
+                n_responses_sent,
+                n_requests_received,
+                n_responses_received,
+            ],
+            axis=1,
+        )
+        .reset_index()
+        .fillna(0)
+        .rename(
+            columns={
+                "index": "ip",
+                0: "n_requests_sent",
+                1: "n_responses_sent",
+                2: "n_requests_received",
+                3: "n_responses_received",
+            }
+        )
+        .astype(
+            {
+                "n_requests_sent": int,
+                "n_responses_sent": int,
+                "n_requests_received": int,
+                "n_responses_received": int,
+            }
+        )
+    )
+
+    ip_info["is_resolver"] = (ip_info["n_requests_received"] > 0) | (
+        ip_info["n_responses_sent"] > 0
+    )
+
+    # requests, responses, is_resolver = [], [], []
+
+    # for each unique ip within the current hour, its number of requests,
+    # responses, and whether it is a resolver
+
+    # for ip in ips:
+    #     # get number of requests
+    #     requests.append(
+    #         len(packets[(packets["ip_src"] == ip) & (packets["port_dst"] == 53)])
+    #     )
+
+    #     # get number of responses
+    #     responses.append(
+    #         len(packets[(packets["ip_dst"] == ip) & (packets["port_src"] == 53)])
+    #     )
+
+    #     # whether it is a resolver
+    #     is_resolver.append(
+    #         not packets[(packets["ip_src"] == ip) & (packets["port_src"] == 53)].empty
+    #         or not packets[
+    #             (packets["ip_dst"] == ip) & (packets["port_dst"] == 53)
+    #         ].empty
+    #     )
+
+    # ip_info2 = pd.DataFrame(
+    #     {
+    #         "ip": ips,
+    #         "requests": requests,
+    #         "responses": responses,
+    #         "is_resolver": is_resolver,
+    #     }
+    # )
+
+    # # Test
+    # for ip in ips:
+    #     assert (
+    #         ip_info[ip_info["ip"] == ip]["requests"].iloc[0]
+    #         == ip_info2[ip_info2["ip"] == ip]["n_requests_sent"].iloc[0]
+    #     )
+
+    #     assert (
+    #         ip_info[ip_info["ip"] == ip]["responses"].iloc[0]
+    #         == ip_info2[ip_info2["ip"] == ip]["n_responses_received"].iloc[0]
+    #     )
+    #     assert (
+    #         ip_info[ip_info["ip"] == ip]["is_resolver"].iloc[0]
+    #         == ip_info2[ip_info2["ip"] == ip]["is_resolver"].iloc[0]
+    #     )
+
+    # get valid IPs
+    ip_info["ratio_req_res"] = (
+        ip_info["n_requests_sent"] / ip_info["n_responses_received"]
+    )
+    ip_info["is_valid"] = (
+        (ip_info["n_requests_sent"] > 100)
+        & (ip_info["ratio_req_res"] > 0.985)
+        & (ip_info["ratio_req_res"] < 1.015)
         & (ip_info["is_resolver"] == False)
-    ]
-    good_ips.to_csv("good_ips.csv")
+    )
+
+    # save info on IPS as CSV
+    ip_info.to_csv(data_path / "artifacts" / f"{filename}_ip_info.csv")
+
+    valid_ips = ip_info[ip_info["is_valid"]]["ip"]
 
     # select from the csv file only the requests, sent by an ip in good_ips, of type A,
     # not retransmission, [TODO having a response with the same id within 60 seconds]
-    print(len(df))
-    df = df[
-        (df["ip.src"].isin(good_ips["ip"]))
-        & (df["udp.dstport"] == 53)
-        & (pd.isna(df["dns.retransmission"]))
-        & (df["dns.qry.type"] == 1)
+
+    valid_packets = packets[
+        packets["ip_src"].isin(valid_ips)
+        & (packets["port_dst"] == 53)
+        & ~packets["is_retransmission"]
+        & (packets["qry_type"] == "A")
     ]
-    print(len(df))
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
-    df.to_csv(os.path.join(OUTPUT_FOLDER, f"{os.path.splitext(csv)[0]}-clean.csv"))
+
+    valid_packets.to_csv(csv_path / filename, sep=";")
+
+    workspace.logger.info(
+        "Found %d valid packets for %d IPs", len(valid_packets), len(valid_ips)
+    )

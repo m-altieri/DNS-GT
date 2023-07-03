@@ -1,13 +1,26 @@
 #!/bin/sh
-# Preprocessing of PCAP files
+# Preprocessing of PCAP files using tshark
 #
 # Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
 # Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
 
-echo "Conversion of PCAP into CSV"
+echo "Conversion of PCAP files into CSV"
 
-mkdir -p $1/csv
-for infilename in `find $1 -name '*.pcap' -type f`;
+# Test the absence of argument
+if [ -z "$1" ]; then
+  echo "A folder should be as argument."
+  exit 1
+fi
+
+
+# Remove trailing slash
+datapath="${1%/}"
+outpath="$datapath/tcsv"
+
+# Create the forder if missing
+mkdir -p $datapath/tcsv
+
+for infilename in `find $datapath -name '*.pcap' -type f`;
 do
     echo Processing $infilename...
     outfilename=$(basename "$infilename" .pcap).csv
@@ -28,7 +41,7 @@ do
      -e dns.resp.name \
      -e dns.resp.type  \
      -e dns.flags.rcode \
-    > $1/csv/$outfilename
+    > $outpath/$outfilename
 
-    echo Saved as $1/csv/$outfilename
+    echo Saved as $outpath/$outfilename
 done

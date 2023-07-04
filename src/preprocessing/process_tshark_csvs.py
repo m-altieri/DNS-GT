@@ -46,8 +46,10 @@ config = get_config()
 data_path = config.get_path("paths", "data") / "TI-2016"
 tcsv_path = data_path / "tcsv"
 
-csv_path = data_path / "csv"
-csv_path.mkdir(exist_ok=True)
+pcsv_path = data_path / "pcsv"
+pcsv_path.mkdir(exist_ok=True)
+
+(data_path / 'artifacts').mkdir(exist_ok=True)
 
 # -- Preprocessing
 for tcsvfile_path in tcsv_path.glob("*.csv"):
@@ -57,7 +59,7 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
     filename = tcsvfile_path.name
 
     # check whether the file was already pre-processed
-    if (csv_path / filename).exists():
+    if (pcsv_path / filename).exists():
         workspace.logger.info("Already preprocessed tshark CSV. Skipped.")
         continue
 
@@ -253,7 +255,7 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
         & (packets["qry_type"] == "A")
     ]
 
-    valid_packets.to_csv(csv_path / filename, sep=";")
+    valid_packets.to_csv(pcsv_path / filename, sep=";")
 
     workspace.logger.info(
         "Found %d valid packets for %d IPs", len(valid_packets), len(valid_ips)

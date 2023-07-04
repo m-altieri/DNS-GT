@@ -1,0 +1,11 @@
+dim: 768
+domains_vocab_path: "../preprocessing/test_clean_vocab/domains_vocab.txt"
+hosts_vocab_path: "../preprocessing/test_clean_vocab/hosts_vocab.txt"
+mask_p:
+  mask: 0.07
+  same: 0.02
+  random: 0.01
+n_heads: 12
+omega: 1.0
+blocks: 12
+quick_tb: false

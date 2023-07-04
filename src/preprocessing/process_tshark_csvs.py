@@ -91,6 +91,14 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
         {"port_src": -1, "port_dst": -1, "qry_type": -1, "is_retransmission": 0}
     )
 
+    # in case of double queries, only keep the 'A' one
+    packets["qry_type"].replace(
+        to_replace={
+            "1,28": "1",
+        },
+        inplace=True,
+    )
+
     # define type of known fields
     packets = packets.astype(
         {

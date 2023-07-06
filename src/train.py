@@ -364,9 +364,6 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    logger.info(
-        f"{Fore.YELLOW}Ignoring --version and setting it to `clean`{Fore.RESET}"
-    )
     args.version = "clean"
     queries_path = {
         "clean": "preprocessing/clean_arrays/queries"
@@ -374,6 +371,7 @@ def main():
         # "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
         # "../data/"
     }[args.version]
+    logger.info(f"{Fore.YELLOW}Using --version {args.version}{Fore.RESET}")
     domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
     hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
     with open(domains_vocab_path, "r") as f:
@@ -633,6 +631,7 @@ def main():
         model.save_weights(save_weights_path)
 
     # Save embeddings
+    logger.info("Saving embeddings...")
     if not os.path.exists("../embeddings"):
         os.makedirs("../embeddings")
     embeddings_folder = os.path.join(
@@ -640,7 +639,6 @@ def main():
     )
     if not os.path.exists(embeddings_folder):
         os.makedirs(embeddings_folder)
-
     domain_embeddings = (
         model.domain_embeddings.embeddings.numpy()
     )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
@@ -652,6 +650,7 @@ def main():
         domain_embeddings,
     )
 
+    # Save predictions
     logger.info("Saving model predictions...")
     if not args.finetune:
         raise ValueError(

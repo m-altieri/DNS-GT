@@ -155,11 +155,11 @@ class DELM(tf.keras.Model):
         self._logger.addHandler(logging.StreamHandler(sys.stdout))
 
         # Configuration
-        default_conf_file = (
-            "conf/DELM_small.yaml"
-            if conf["version"] == "small"
-            else "conf/DELM_large.yaml"
-        )
+        default_conf_file = {
+            "small": "conf/DELM_small.yaml",
+            "all": "conf/DELM_large.yaml",
+            "clean": "conf/DELM_clean.yaml",
+        }[conf["version"]]
         try:
             with open(default_conf_file, "r") as f:
                 default_conf = yaml.safe_load(f)

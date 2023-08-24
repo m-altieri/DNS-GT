@@ -13,3 +13,4 @@ src/scripts/*
 src/visualizations/*
 !src/visualizations/*.py
 predictions/*
+src/lib/tacks

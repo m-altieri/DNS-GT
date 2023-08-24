@@ -16,6 +16,7 @@ from tensorflow.keras.callbacks import ModelCheckpoint
 
 from models import DELM, Word2Vec
 from utils.distribute import DummyStrategy
+from utils.sequencing import get_clusters_from_timestamp, pad
 
 
 def config_gpus(args):
@@ -151,7 +152,7 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument("--group-hosts", action="store_true", default=True)
+    argparser.add_argument("--group-hosts", action="store_true")
     argparser.add_argument(
         "--run-name",
         action="store",
@@ -198,6 +199,7 @@ def parse_args():
         + "Only has effect if --finetune.",
     )
     argparser.add_argument("--max-tokens", action="store", type=int)
+    argparser.add_argument("--concat-hosts", action="store_true")
 
     args = argparser.parse_args()
 
@@ -229,52 +231,46 @@ def parse_args():
     return args
 
 
-def seq_generator_from_folder(
-    input_folder,
-    seqlen,
-    stride=1,
-    include_start=False,
-    include_class=False,
-    group_hosts=True,
-    model=None,
-    vocab=None,
-    tiny_amount=None,
-):
-    """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
+def seq_generator_from_folder(input_folder: str, **kwargs) -> iter:
+    """Create a generator for the tf.data API.
+
+    Args:
+        input_folder (str): folder containing .npy files, each representing a matrix of shape (n_queries, 2).
+
+    Keyword args:
+        seqlen (int): maximum sequence length
+        strategy (str): sequencing strategy. If "cluster", sequences will be created by splitting
+        queries based on their timestamp, resulting in sequences of different lengths being padded.
+        Each query will appear in a single sequence.
+        If "fixed", sequences will be cut at exactly seqlen, disregarding the timestamp.
+        Each query will appear in multiple sequences, depending on the stride value.
+        stride (int): if strategy is "fixed", by how many queries to shift after each sequence
+        include_start (bool): Deprecated. whether to include a <START> token at the beginning of the sequence
+        include_class (bool): used in finetuning to include the class label of each query
+        group_hosts (bool): whether each sequence should have only queries from the same host
+        model (str): model to use. Either "delm" or "w2v"
+        vocab (str): domains vocabulary. Only used in finetuning
+        tiny_amount (bool): Deprecated. Whether to use a small number of queries for debugging purposes
+        verbose (bool): whether to print additional debugging info
+
+    Yields:
+        iter: a generator that yields input sequences for the model
+    """
+
     for f in os.listdir(input_folder):
         if os.path.splitext(os.path.join(input_folder, f))[-1] != ".npy":
             continue
-        seqs = create_sequences(
-            os.path.join(input_folder, f),
-            seqlen,
-            stride,
-            include_start,
-            include_class,
-            group_hosts,
-            model,
-            vocab,
-            tiny_amount,
-        )
+
+        seqs = _create_sequences(os.path.join(input_folder, f), **kwargs)
         for seq in seqs:
             yield seq
 
 
-def create_sequences(
-    input_file,
-    seqlen,
-    stride=1,
-    include_start=False,
-    include_class=False,
-    group_hosts=True,
-    model=None,
-    vocab=None,
-    tiny_amount=None,
-):
+def _create_sequences(input_file: str, **kwargs):
     queries = np.load(input_file, allow_pickle=True)
-    if tiny_amount:
+    if kwargs.get("tiny_amount"):
         queries = queries[:10000]
-
-    if include_class:
+    if kwargs.get("include_class"):
         labels = pd.read_csv(
             os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
         )
@@ -296,7 +292,7 @@ def create_sequences(
             ]
         )
         # Only use labels for domains in embs (i.e. in the vocabulary)
-        labels = labels[labels["domain"].isin(vocab)]
+        labels = labels[labels["domain"].isin(kwargs.get("vocab"))]
         labels = labels.reset_index()
 
         # take (any, ok) column
@@ -310,27 +306,69 @@ def create_sequences(
         queries = np.concatenate(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
         )
+    if kwargs.get("group_hosts"):  # sort queries by host, preserving row structure
+        queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
+    seqs = []
+    if kwargs.get("model") == "delm":
+        if kwargs.get("strategy") == "cluster":
+            for host in np.unique(queries[:, 0]):  # for each unique host
 
-    if group_hosts:  # sort queries by host, preserving row structure
-        queries = queries[np.argsort(queries[:, 0])]
+                host_queries = queries[
+                    np.where(queries[:, 0] == host)[0]
+                ]  # get queries made by the current host
 
-    if model == "delm":  # output [queries - stride, seqlen, 2 or 3]
-        actual_seqlen = seqlen - include_start
-        seqs = np.empty(
-            shape=(
-                (len(queries) - actual_seqlen) // stride + 1,
-                seqlen,
-                3 if include_class else 2,
-            ),
-            dtype=object,
-        )
-        for i, _ in enumerate(seqs):
-            if include_start:
-                seqs[i][0] = ["<START>", "<START>"]
-            seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
+                # get cluster labels of that host's queries
+                host_cluster_labels = get_clusters_from_timestamp(host_queries)
 
-    elif model == "w2v":  # output [queries, seqlen]
-        seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], seqlen))
+                # from each of those clusters we are going to make a sequence
+                for c in range(np.max(host_cluster_labels) + 1):
+                    cluster = host_queries[
+                        np.where(host_cluster_labels == c)
+                    ]  # get queries associated to the current cluster label
+                    cluster = cluster[
+                        :, :-1
+                    ]  # remove timestamp once it's no longer needed
+
+                    # take first element of the domain (the domain is a list with always one token)
+                    # TODO this is only ok for the trivial tokenizer
+                    cluster = [[q[0], q[1][0]] for q in cluster]
+
+                    # truncate clusters (sequences) longer than seqlen, moving the excess to a new sequence
+                    while len(cluster) > kwargs.get("seqlen"):
+                        if kwargs.get("verbose"):
+                            print(
+                                f"[INFO] Truncating sequence with cluster ID {c} for host {host}: length of {len(cluster)} exceeds seqlen of {kwargs.get('seqlen')}."
+                            )
+                        truncated_cluster = cluster[: kwargs.get("seqlen")]
+                        seqs.append(truncated_cluster)
+                        cluster = cluster[kwargs.get("seqlen") :]
+
+                    seqs.append(
+                        pad(cluster, kwargs.get("seqlen"))
+                    )  # this sequence will not be full, so we have to pad it to seqlen
+            seqs = np.array(seqs, dtype=object)
+        elif (
+            kwargs.get("strategy") == "fixed"
+        ):  # output [queries - stride, seqlen, 2 or 3]
+            actual_seqlen = kwargs.get("seqlen") - kwargs.get("include_start")
+            seqs = np.empty(
+                shape=(
+                    (len(queries) - actual_seqlen) // kwargs.get("stride") + 1,
+                    kwargs.get("seqlen"),
+                    3 if kwargs.get("include_class") else 2,
+                ),
+                dtype=object,
+            )
+            for i, _ in enumerate(seqs):
+                if kwargs.get("include_start"):
+                    seqs[i][0] = ["<START>", "<START>"]
+                seqs[i][kwargs.get("include_start") :] = queries[
+                    i * kwargs.get("stride") : i * kwargs.get("stride") + actual_seqlen
+                ]
+        else:
+            raise ValueError("'strategy' kwarg must be either 'cluster' or 'fixed'.")
+    elif kwargs.get("model") == "w2v":  # output [queries, seqlen]
+        seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], kwargs.get("seqlen")))
     else:
         raise ValueError("Specify model to create sequences.")
 
@@ -365,32 +403,33 @@ def main():
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
     args.version = "clean"
-    queries_path = {
-        "clean": "preprocessing/clean_arrays/queries"
-        # "../data/from_original/arrays/queries"  # TODO split into small and all versions
-        # "/mnt/storage15/TI-2016-preprocessed/" + f"arrays/{args.version}/queries"
-        # "../data/"
-    }[args.version]
-    logger.info(f"{Fore.YELLOW}Using --version {args.version}{Fore.RESET}")
-    domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
-    hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
+    path = "/mnt/storage15/TI-2016/npy/tokenized/trivial"
+    queries_path = path
+    domains_vocab_path = os.path.join(path, "domain_vocab.txt")
+    domains_vocab_path = os.path.join(path, "host_vocab.txt")
+
+    # queries_path = {"clean": "/mnt/storage15/TI-2016/npy"}[args.version]
+    # logger.info(f"{Fore.YELLOW}Using --version {args.version}{Fore.RESET}")
+    # domains_vocab_path = f"../data/vocabs/{args.version}/domains_vocab.txt"
+    # hosts_vocab_path = f"../data/vocabs/{args.version}/hosts_vocab.txt"
     with open(domains_vocab_path, "r") as f:
         domains_vocab = [l.strip() for l in f.readlines()]
 
     config_gpus(args)
 
-    # Data Pipeline
     train = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
-            stride=args.stride,
             seqlen=args.seqlen,
+            strategy="cluster",
+            stride=args.stride,
             include_start=args.include_start,
             include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
             vocab=domains_vocab,
             tiny_amount=args.tiny,
+            verbose=False,
         ),
         output_signature=tf.TensorSpec(
             shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
@@ -401,18 +440,21 @@ def main():
     test = tf.data.Dataset.from_generator(
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "test"),
-            stride=args.stride,
             seqlen=args.seqlen,
+            strategy="cluster",
+            stride=args.stride,
             include_start=args.include_start,
             include_class=args.finetune,
             group_hosts=args.group_hosts,
             model=args.model.lower(),
             vocab=domains_vocab,
             tiny_amount=args.tiny,
+            verbose=False,
         ),
-        output_signature=tf.TensorSpec(
-            shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
-        )
+        # output_signature=tf.TensorSpec(
+        #     shape=(args.seqlen, 2 + args.finetune), dtype=tf.string
+        # )
+        output_signature=tf.TensorSpec(shape=[None, 2 + args.finetune], dtype=tf.string)
         if args.model.lower() == "delm"
         else tf.TensorSpec(shape=(args.seqlen, 1 + args.finetune), dtype=tf.string),
     )

@@ -23,15 +23,15 @@ c = 0
 for f in (pbar := tqdm(os.listdir(args.queries_folder))):
     c += 1
 
-    # skip irrelevant files
-    if not f.startswith("queries-"):
+    # # skip irrelevant files
+    if not f.endswith(".npy"):
         continue
 
     # load the file
     q = np.load(os.path.join(args.queries_folder, f), allow_pickle=True)
     pbar.set_description(
-        f"[File {c}] ({len(q):,} new queries, {np.sum(hosts[1]):,.0f} processed), "
-        + f"total unique: ({len(hosts[0]):,} hosts / {len(domains[0]):,} domains)"
+        f"[File {c}] {len(q):,} new queries, {np.sum(hosts[1]):,.0f} total,"
+        + f" unique: {len(hosts[0]):,} hosts / {len(domains[0]):,} domains"
     )
 
     # get hosts and domains

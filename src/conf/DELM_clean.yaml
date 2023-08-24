@@ -1,11 +1,11 @@
 dim: 128
-domains_vocab_path: "../data/vocabs/clean/domains_vocab.txt"
-hosts_vocab_path: "../data/vocabs/clean/hosts_vocab.txt"
+domains_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
+hosts_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/host_vocab.txt"
 mask_p:
-  mask: 0.06
-  same: 0.03
+  mask: 0.04
+  same: 0.05
   random: 0.01
 n_heads: 8
-omega: 0.7
+omega: 1.0
 blocks: 8
 quick_tb: false

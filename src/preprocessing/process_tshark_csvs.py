@@ -26,6 +26,7 @@ import sys
 import pandas as pd
 from datetime import datetime
 
+sys.path.append("../lib")
 from tacks.utils.base import Workspace, get_argparser, get_config
 
 # -- Argument Parser and Workspace
@@ -49,7 +50,7 @@ tcsv_path = data_path / "tcsv"
 pcsv_path = data_path / "pcsv"
 pcsv_path.mkdir(exist_ok=True)
 
-(data_path / 'artifacts').mkdir(exist_ok=True)
+(data_path / "artifacts").mkdir(exist_ok=True)
 
 # -- Preprocessing
 for tcsvfile_path in tcsv_path.glob("*.csv"):

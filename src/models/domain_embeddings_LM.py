@@ -58,6 +58,13 @@ class DELM(tf.keras.Model):
         rnd = tf.where(
             tf.math.equal(domains, "<START>"), tf.ones_like(rnd), rnd
         )  # <START> is never masked
+        rnd = tf.where(
+            tf.math.equal(domains, "<PAD>"), tf.ones_like(rnd), rnd
+        )  # <PAD> is never masked
+        domain_indexes = self.domains_lookup(domains)
+        rnd = tf.where(
+            tf.math.equal(domain_indexes, 0), tf.ones_like(rnd), rnd
+        )  # [UNK] (tf assigns index 0 to it) is never masked
 
         # Create masks of <MASK>, unchanged and random tokens
         all_mask_tokens = tf.fill(dims=tf.shape(domains), value="<MASK>")  # [B,L]
@@ -250,6 +257,7 @@ class DELM(tf.keras.Model):
             vocabulary=self.domains_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
             invert=True,
+            # oov_token="<UNK>",
         )
         self.hosts_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.hosts_vocabulary,
@@ -259,6 +267,7 @@ class DELM(tf.keras.Model):
             vocabulary=self.hosts_vocabulary,
             num_oov_indices=1 if self.conf.get("max_tokens") else 0,
             invert=True,
+            # oov_token="<UNK>",
         )
         self.ndomains = self.domains_lookup.vocabulary_size()
         self.nhosts = self.hosts_lookup.vocabulary_size()
@@ -281,7 +290,10 @@ class DELM(tf.keras.Model):
         self.blocks = [
             MHGAT_Block(
                 n_heads=self.conf["n_heads"],
-                emb_dim=self.conf["dim"],
+                emb_dim=self.conf["dim"]
+                * (
+                    1 + self.conf.get("concat_hosts")
+                ),  # if --concat-hosts, the emb_dim is doubled
                 block_id=block,
                 tensorboard=self.conf["tensorboard"],
                 tb_writer=self.tb_writer,
@@ -299,13 +311,45 @@ class DELM(tf.keras.Model):
         #     [self.conf["dim"] // 4, 1], ["linear", "sigmoid"]
         # )  # Binary classifier
 
-    @tf.function
+    # @tf.function
     def call(self, inputs, training=None, **kwargs):
         # Separate host from domain tokens in the given sequence
-        hosts = self.slice_hosts(inputs)
+        hosts = self.slice_hosts(inputs)  # [B,L,1]
         domains = self.slice_domains(inputs)  # [B,L,1]
-        hosts = tf.squeeze(hosts, axis=-1)
+        hosts = tf.squeeze(hosts, axis=-1)  # [B,L]
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
+
+        # Replace unknown hosts and domains with <UNK>
+        # TODO is there any advantage of doing this manually over just using num_oov_indices=1 in StringLookup?
+        # doing it manually increases the time from ~500ms/step to 1s/step even as a tf.function
+        # because it has to make check every time with the whole vocab (huge matrix operation)
+        # hosts = tf.where(
+        #     tf.reduce_any(  # reduce domain to true if it equals at least one token in vocab
+        #         tf.equal(  # input broadcasting trick to check if each host equals each token in vocab
+        #             tf.expand_dims(self.hosts_vocabulary, axis=0),
+        #             tf.expand_dims(hosts, axis=2),
+        #         ),
+        #         axis=2,
+        #     ),
+        #     hosts,
+        #     tf.fill(tf.shape(hosts), "<UNK>"),
+        # )
+        # domains = tf.where(
+        #     tf.reduce_any(  # reduce domain to true if it equals at least one token in vocab
+        #         tf.equal(  # input broadcasting trick to check if each domain equals each token in vocab
+        #             tf.expand_dims(self.domains_vocabulary, axis=0),
+        #             tf.expand_dims(domains, axis=2),
+        #         ),
+        #         axis=2,
+        #     ),
+        #     domains,
+        #     tf.fill(tf.shape(domains), "<UNK>"),
+        # )
+
+        # Lookup vocab index for each token
+        domain_indexes = self.domains_lookup(domains)
+        host_indexes = self.hosts_lookup(hosts)
+        print(domain_indexes)
 
         # Mask the tokens if required
         mask_p = tf.constant(self.conf["mask_p"]["mask"])
@@ -323,24 +367,28 @@ class DELM(tf.keras.Model):
             ),  # test_step() è training=False, ma ha comunque bisogno del masking
         )
 
-        # adj_h = self.adj_estimator(
-        #     domains
-        # )  # about 33% time increase compared to using tf.ones(), and most importantly makes the GPU util unstable
-        adj_h = tf.ones(
-            [tf.shape(domains)[0], tf.shape(domains)[1], tf.shape(domains)[1]]
+        # set adjacency to 1 everywhere except <PAD> where it's set to 0
+        adj_h = tf.einsum(
+            "bi,bj->bij",
+            tf.cast(tf.not_equal(domains, "<PAD>"), tf.float64),
+            tf.cast(tf.not_equal(domains, "<PAD>"), tf.float64),
         )
 
-        # Lookup vocab index for each token
-        domain_indexes = self.domains_lookup(domains)
-        host_indexes = self.hosts_lookup(hosts)
+        # # Lookup vocab index for each token
+        # domain_indexes = self.domains_lookup(domains)
+        # host_indexes = self.hosts_lookup(hosts)
 
         # Retrieve embedding for each token index
         e_d = self.domain_embeddings(domain_indexes)
         e_h = self.host_embeddings(host_indexes)
 
-        # Weighted sum of host and domain embeddings (according to omega)
-        # TODO This can only be done if domain dim and host dim are the same!
-        emb = self.conf["omega"] * e_d + (1 - self.conf["omega"]) * e_h
+        # Combining domain and host embeddings
+        if self.conf.get(
+            "concat_hosts"
+        ):  # if --concat-hosts, concatenate domain and host embeddings
+            emb = tf.concat([e_d, e_h], axis=-1)
+        else:  # else, do a weighted sum, according to omega
+            emb = self.conf["omega"] * e_d + (1 - self.conf["omega"]) * e_h
 
         # Dropout the embeddings before feeding to MHGAT blocks
         emb = self.dropout(emb)
@@ -558,14 +606,18 @@ class DELM(tf.keras.Model):
 class MHGAT_Block(tf.keras.layers.Layer):
     @tf.function
     def tb_log_image(self, name, tensor, step, minmax=False):
+        # if the channel axis is missing, add it with dim 1 (greyscale)
         tensor = tf.cond(
             tf.math.equal(tf.rank(tensor), tf.constant(3)),
             lambda: tf.expand_dims(tensor, -1),
             lambda: tensor,
         )
+
+        # if minmax, apply minmax normalization to the image
         tensor = tf.cond(
             tf.constant(minmax), lambda: self.minmax_norm(tensor), lambda: tensor
         )
+
         with self.tb_writer.as_default():
             tf.summary.image(
                 name=name,
@@ -651,7 +703,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # Residual Dropout
         self.dropout = tf.keras.layers.Dropout(0.1)
 
-    @tf.function
+    # @tf.function
     def call(self, inputs, adj_h, **kwargs):
         # inputs (embeddings) [B, L, emb_dim]
         Q = tf.stack(
@@ -725,7 +777,7 @@ class FF(tf.keras.layers.Layer):
             for dim, activation in zip(dims, activations)
         ]
 
-    @tf.function
+    # @tf.function
     def call(self, x):
         for l in self.dense_layers:
             emb = l(x)
@@ -890,7 +942,7 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
         self.threshold = threshold
         self.normalize = normalize
 
-    @tf.function
+    # @tf.function
     def call(self, inputs):
         # inputs [B,L]
         hierarchical_similarity = self.hierarchical_similarity(inputs, step=self.step)

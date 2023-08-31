@@ -15,28 +15,15 @@ def get_clusters_from_timestamp(queries, eps=lambda deltas: np.percentile(deltas
         By default it is the 50-percentile of the subsequent timestamp differences.
         The previous default was `lambda deltas: np.mean(deltas) + 3 * np.std(deltas)`.
     """
-    # queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
-
     deltas = queries[1:, -1] - queries[:-1, -1]
     avg_delta = np.mean(deltas)
     try:  # TODO remove the try-except block once you figure out the bug
         std_delta = np.std(deltas)
     except ZeroDivisionError as e:
-        print(e)
-        print(deltas)
-        print(queries)
-        if np.isnan(avg_delta):
-            avg_delta = 0.0
-        std_delta = 0.0
+        print(f"[WARN] Found a host with a single query: {queries}. Returning [-1].")
         return [-1]
-    # print("Avg:", avg_delta)
-    # print("Std:", std_delta)
 
     dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, -1], -1))
-    # dbscan = DBSCAN(eps=avg_delta + 2 * std_delta).fit(
-    #     np.expand_dims(queries[:, -1], -1)
-    # )
-    # print(dbscan.labels_)
     return dbscan.labels_
 
 
@@ -50,7 +37,7 @@ def pad(sequence, to_len, token="<PAD>"):
 
 if __name__ == "__main__":
     queries = np.load(
-        "/mnt/storage15/TI-2016/npy/tokenized/trivial/train/20160424_075411.npy",
+        "/mnt/storage15/TI-2016/npy/tokenized/trivial/train/20160423_235403.npy",
         allow_pickle=True,
     )
     queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
@@ -77,22 +64,29 @@ if __name__ == "__main__":
 
     last_ts = queries[0, -1]
     block_size, block_sizes = 0, []
+    print(queries)
+    print(queries.shape)
+    clusters = get_clusters_from_timestamp(queries)
+    print(clusters)
+    print(len(clusters))
+
     for q, query in enumerate(queries):
-        if query[-1] - last_ts > avg_delta + 3 * std_delta:
-            print("Block size:", block_size)
-            print("\n")
-            block_sizes.append(block_size)
-            block_size = 0
+        # if query[-1] - last_ts > avg_delta + 3 * std_delta:
+        # print("Block size:", block_size)
+        # print("\n")
+        # block_sizes.append(block_size)
+        # block_size = 0
 
-        print(f"{query[2]} [{dbscan.labels_[q]}]: {query[1]} ({query[0]})")
-        block_size += 1
-        last_ts = query[-1]
-    print(dbscan.labels_)
+        print(f"{query[2]} [{clusters[q]}]: {query[1]} ({query[0]})")
 
-    print("Block size:", block_size)
-    print("\n")
+    # block_size += 1
+    # last_ts = query[-1]
+    # print(dbscan.labels_)
 
-    print("# blocks:", len(block_sizes))
-    print("Max block size:", np.max(block_sizes))
-    print("Avg block size:", np.mean(block_sizes))
-    print("Std block size:", np.std(block_sizes))
+    # print("Block size:", block_size)
+    # print("\n")
+
+    # print("# blocks:", len(block_sizes))
+    # print("Max block size:", np.max(block_sizes))
+    # print("Avg block size:", np.mean(block_sizes))
+    # print("Std block size:", np.std(block_sizes))

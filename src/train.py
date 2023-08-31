@@ -129,8 +129,8 @@ def parse_args():
         "--version",
         action="store",
         choices=["small", "all", "clean"],  # TODO clean should become the normal one
-        default="small",
-        help="Version of the dataset used.",
+        default="clean",
+        help="Deprecated. Version of the dataset used.",
     )
     argparser.add_argument(
         "--tiny",
@@ -160,7 +160,7 @@ def parse_args():
         help="Name used when saving to file. Has no effect if --load.",
     )
     argparser.add_argument("--omega", action="store", type=float)
-    argparser.add_argument("--shuffle", action="store_true")
+    argparser.add_argument("--shuffle", action="store_true")  # deprecated
     argparser.add_argument(
         "--type",
         action="store",
@@ -200,6 +200,12 @@ def parse_args():
     )
     argparser.add_argument("--max-tokens", action="store", type=int)
     argparser.add_argument("--concat-hosts", action="store_true")
+    argparser.add_argument(
+        "--seq-strategy",
+        action="store",
+        choices=["cluster", "fixed"],
+        default="cluster",
+    )
 
     args = argparser.parse_args()
 
@@ -263,6 +269,7 @@ def seq_generator_from_folder(input_folder: str, **kwargs) -> iter:
 
         seqs = _create_sequences(os.path.join(input_folder, f), **kwargs)
         for seq in seqs:
+            # print("seq:", seq)
             yield seq
 
 
@@ -306,25 +313,29 @@ def _create_sequences(input_file: str, **kwargs):
         queries = np.concatenate(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
         )
-    if kwargs.get("group_hosts"):  # sort queries by host, preserving row structure
+    if kwargs.get(
+        "group_hosts"
+    ):  # sort queries by host, and within each host by timestamp
         queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
     seqs = []
+
     if kwargs.get("model") == "delm":
         if kwargs.get("strategy") == "cluster":
             for host in np.unique(queries[:, 0]):  # for each unique host
 
-                host_queries = queries[
-                    np.where(queries[:, 0] == host)[0]
-                ]  # get queries made by the current host
+                # get queries made by the current host
+                host_queries = queries[np.where(queries[:, 0] == host)[0]]
 
                 # get cluster labels of that host's queries
                 host_cluster_labels = get_clusters_from_timestamp(host_queries)
 
                 # from each of those clusters we are going to make a sequence
                 for c in range(np.max(host_cluster_labels) + 1):
+
                     cluster = host_queries[
                         np.where(host_cluster_labels == c)
                     ]  # get queries associated to the current cluster label
+
                     cluster = cluster[
                         :, :-1
                     ]  # remove timestamp once it's no longer needed
@@ -340,22 +351,32 @@ def _create_sequences(input_file: str, **kwargs):
                                 f"[INFO] Truncating sequence with cluster ID {c} for host {host}: length of {len(cluster)} exceeds seqlen of {kwargs.get('seqlen')}."
                             )
                         truncated_cluster = cluster[: kwargs.get("seqlen")]
+
                         seqs.append(truncated_cluster)
                         cluster = cluster[kwargs.get("seqlen") :]
 
-                    seqs.append(
-                        pad(cluster, kwargs.get("seqlen"))
-                    )  # this sequence will not be full, so we have to pad it to seqlen
-            seqs = np.array(seqs, dtype=object)
+                    # this sequence will not be full, so we have to pad it to seqlen
+                    seqs.append(pad(cluster, kwargs.get("seqlen")))
+
         elif (
             kwargs.get("strategy") == "fixed"
         ):  # output [queries - stride, seqlen, 2 or 3]
+
+            # if the timestamp is present, remove it
+            if np.shape(queries)[-1] == 3 + kwargs.get("include_class"):
+                queries = queries[..., :-1]
+            print(f"queries: {queries.shape}")
+
+            # if the domain is a list (tokenized), take the first element
+            # TODO Only ok for TrivialTokenizer!!
+            queries = [[q[0], q[1][0]] for q in queries]
+
             actual_seqlen = kwargs.get("seqlen") - kwargs.get("include_start")
             seqs = np.empty(
                 shape=(
                     (len(queries) - actual_seqlen) // kwargs.get("stride") + 1,
                     kwargs.get("seqlen"),
-                    3 if kwargs.get("include_class") else 2,
+                    2 + kwargs.get("include_class"),
                 ),
                 dtype=object,
             )
@@ -367,6 +388,9 @@ def _create_sequences(input_file: str, **kwargs):
                 ]
         else:
             raise ValueError("'strategy' kwarg must be either 'cluster' or 'fixed'.")
+
+        seqs = np.array(seqs, dtype=str)
+
     elif kwargs.get("model") == "w2v":  # output [queries, seqlen]
         seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], kwargs.get("seqlen")))
     else:
@@ -402,7 +426,6 @@ def main():
     logger.info("Started training with args:")
     logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
 
-    args.version = "clean"
     path = "/mnt/storage15/TI-2016/npy/tokenized/trivial"
     queries_path = path
     domains_vocab_path = os.path.join(path, "domain_vocab.txt")
@@ -421,7 +444,7 @@ def main():
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "train"),
             seqlen=args.seqlen,
-            strategy="cluster",
+            strategy=args.seq_strategy,
             stride=args.stride,
             include_start=args.include_start,
             include_class=args.finetune,
@@ -441,7 +464,7 @@ def main():
         lambda: seq_generator_from_folder(
             os.path.join(queries_path, "test"),
             seqlen=args.seqlen,
-            strategy="cluster",
+            strategy=args.seq_strategy,
             stride=args.stride,
             include_start=args.include_start,
             include_class=args.finetune,
@@ -562,9 +585,9 @@ def main():
             #     second token |  |
             #                     | domain
             mask[0, 0, -1] = 1
-            mask[0, 1, -1] = 1
-            mask[0, 2, -1] = 1
-            masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=object), seq)
+            # mask[0, 1, -1] = 1
+            # mask[0, 2, -1] = 1
+            masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=str), seq)
 
             pred, loss, kwout = model._predict(seq, mask)
             print(f"Seq index: {seq_idx}")

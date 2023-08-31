@@ -2,9 +2,9 @@ dim: 128
 domains_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
 hosts_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/host_vocab.txt"
 mask_p:
-  mask: 0.04
-  same: 0.05
-  random: 0.01
+  mask: 0.00
+  same: 0.10
+  random: 0.00
 n_heads: 8
 omega: 1.0
 blocks: 8

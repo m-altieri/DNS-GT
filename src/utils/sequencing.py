@@ -36,57 +36,71 @@ def pad(sequence, to_len, token="<PAD>"):
 
 
 if __name__ == "__main__":
+    seqlen = 32
     queries = np.load(
         "/mnt/storage15/TI-2016/npy/tokenized/trivial/train/20160423_235403.npy",
         allow_pickle=True,
     )
-    queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
 
-    deltas = queries[1:, -1] - queries[:-1, -1]
-    avg_delta = np.mean(deltas)
-    std_delta = np.std(deltas)
-    print("Avg:", avg_delta)
-    print("Std:", std_delta)
-    for q in range(10, 100, 10):
-        print(f"Delta {q}-percentile: {np.percentile(deltas, q)}")
-    dbscan = DBSCAN(eps=np.percentile(deltas, 50)).fit(
-        np.expand_dims(queries[:, -1], -1)
-    )
+    # deltas = queries[1:, -1] - queries[:-1, -1]
+    # avg_delta = np.mean(deltas)
+    # std_delta = np.std(deltas)
+    # print("Avg:", avg_delta)
+    # print("Std:", std_delta)
+    # for q in range(10, 100, 10):
+    #     print(f"Delta {q}-percentile: {np.percentile(deltas, q)}")
 
-    # dbscan = DBSCAN(eps=avg_delta + 1 * std_delta).fit(
+    # dbscan = DBSCAN(eps=np.percentile(deltas, 50)).fit(
     #     np.expand_dims(queries[:, -1], -1)
     # )
-    print(dbscan.labels_)
-    print(deltas)
-    print("Max delta:", np.max(deltas))
-    print("Avg:", avg_delta)
-    print("Std:", std_delta)
 
-    last_ts = queries[0, -1]
-    block_size, block_sizes = 0, []
-    print(queries)
-    print(queries.shape)
-    clusters = get_clusters_from_timestamp(queries)
-    print(clusters)
-    print(len(clusters))
-
-    for q, query in enumerate(queries):
-        # if query[-1] - last_ts > avg_delta + 3 * std_delta:
-        # print("Block size:", block_size)
-        # print("\n")
-        # block_sizes.append(block_size)
-        # block_size = 0
-
-        print(f"{query[2]} [{clusters[q]}]: {query[1]} ({query[0]})")
-
-    # block_size += 1
-    # last_ts = query[-1]
     # print(dbscan.labels_)
+    # print(deltas)
+    # print("Max delta:", np.max(deltas))
+    # print("Avg:", avg_delta)
+    # print("Std:", std_delta)
 
-    # print("Block size:", block_size)
-    # print("\n")
+    # clusters = get_clusters_from_timestamp(queries)
 
-    # print("# blocks:", len(block_sizes))
-    # print("Max block size:", np.max(block_sizes))
-    # print("Avg block size:", np.mean(block_sizes))
-    # print("Std block size:", np.std(block_sizes))
+    # for q, query in enumerate(queries):
+    #     print(f"{query[2]} [{clusters[q]}]: {query[1]} ({query[0]})")
+
+    queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
+    seqs = []
+
+    for host in np.unique(queries[:, 0]):  # for each unique host
+
+        # get queries made by the current host
+        host_queries = queries[np.where(queries[:, 0] == host)[0]]
+
+        # get cluster labels of that host's queries
+        host_cluster_labels = get_clusters_from_timestamp(host_queries)
+
+        # from each of those clusters we are going to make a sequence
+        for c in range(np.max(host_cluster_labels) + 1):
+
+            cluster = host_queries[
+                np.where(host_cluster_labels == c)
+            ]  # get queries associated to the current cluster label
+
+            # cluster = cluster[:, :-1]  # remove timestamp once it's no longer needed
+
+            # take first element of the domain (the domain is a list with always one token)
+            # TODO this is only ok for the trivial tokenizer
+            cluster = [[q[0], q[1][0]] for q in cluster]
+
+            # truncate clusters (sequences) longer than seqlen, moving the excess to a new sequence
+            while len(cluster) > seqlen:
+                print(
+                    f"[INFO] Truncating sequence with cluster ID {c} for host {host}: length of {len(cluster)} exceeds seqlen of {seqlen}."
+                )
+                truncated_cluster = cluster[:seqlen]
+
+                seqs.append(truncated_cluster)
+                cluster = cluster[seqlen:]
+
+            # this sequence will not be full, so we have to pad it to seqlen
+            seqs.append(pad(cluster, seqlen))
+
+    for s in seqs:
+        print(s)

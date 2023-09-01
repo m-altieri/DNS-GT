@@ -62,6 +62,7 @@ class DELM(tf.keras.Model):
         rnd = tf.where(
             tf.math.equal(domain_indexes, 0), tf.ones_like(rnd), rnd
         )  # [UNK] (tf assigns index 0 to it) is never masked
+        # TODO [UNK] embedding gets updated according to tensorboard, which shouldn't happen. are you sure it gets mapped to 0? check bug
 
         # Create masks of <MASK>, unchanged and random tokens
         all_mask_tokens = tf.fill(dims=tf.shape(domains), value="<MASK>")  # [B,L]
@@ -281,19 +282,19 @@ class DELM(tf.keras.Model):
         # Token Indexes Lookup
         self.hosts_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.hosts_vocabulary,
-            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            num_oov_indices=1,  # if self.conf.get("max_tokens") else 0,
             name="hosts_lookup",
         )
         self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.hosts_vocabulary,
-            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            num_oov_indices=1,  # if self.conf.get("max_tokens") else 0,
             invert=True,
             # oov_token="<UNK>",
             name="inverse_hosts_lookup",
         )
         self.domains_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.domains_vocabulary,
-            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            num_oov_indices=1,  # if self.conf.get("max_tokens") else 0,
             # TODO now the [UNK] token is automatically added to the vocabulary by StringLookup when num_oov_indices=1;
             # but I already have the <UNK> token in the vocabulary. I should remove <UNK> from the vocabulary generating script,
             # and using the oov_token="<UNK>" parameter for StringLoopkup, to have a consistent format with the other special tokens.
@@ -302,7 +303,7 @@ class DELM(tf.keras.Model):
         )
         self.inverse_domains_lookup = tf.keras.layers.StringLookup(
             vocabulary=self.domains_vocabulary,
-            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
+            num_oov_indices=1,  # if self.conf.get("max_tokens") else 0,
             invert=True,
             # oov_token="<UNK>",
             name="inverse_domains_lookup",
@@ -356,34 +357,7 @@ class DELM(tf.keras.Model):
         hosts = tf.squeeze(hosts, axis=-1)  # [B,L]
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
 
-        # Replace unknown hosts and domains with <UNK>
-        # TODO is there any advantage of doing this manually over just using num_oov_indices=1 in StringLookup?
-        # doing it manually increases the time from ~500ms/step to 1s/step even as a tf.function
-        # because it has to make check every time with the whole vocab (huge matrix operation)
-        # hosts = tf.where(
-        #     tf.reduce_any(  # reduce domain to true if it equals at least one token in vocab
-        #         tf.equal(  # input broadcasting trick to check if each host equals each token in vocab
-        #             tf.expand_dims(self.hosts_vocabulary, axis=0),
-        #             tf.expand_dims(hosts, axis=2),
-        #         ),
-        #         axis=2,
-        #     ),
-        #     hosts,
-        #     tf.fill(tf.shape(hosts), "<UNK>"),
-        # )
-        # domains = tf.where(
-        #     tf.reduce_any(  # reduce domain to true if it equals at least one token in vocab
-        #         tf.equal(  # input broadcasting trick to check if each domain equals each token in vocab
-        #             tf.expand_dims(self.domains_vocabulary, axis=0),
-        #             tf.expand_dims(domains, axis=2),
-        #         ),
-        #         axis=2,
-        #     ),
-        #     domains,
-        #     tf.fill(tf.shape(domains), "<UNK>"),
-        # )
-
-        # <-------------------- DEBUG: monitor some embeddings
+        # <-------------------- DEBUG: monitor some embeddings on tensorboard
         if self.tb_writer and tf.math.equal(
             tf.math.floormod(self.step, tf.constant(10, dtype=tf.int64)),
             tf.constant(0, dtype=tf.int64),
@@ -451,7 +425,7 @@ class DELM(tf.keras.Model):
             ),  # test_step() is training=False, but it still needs masking
         )
 
-        # set adjacency to 1 everywhere except <PAD> where it's set to 0
+        # set adjacency to 1 everywhere except for <PAD>, for which it's set to 0
         adj = tf.einsum(
             "bi,bj->bij",
             tf.cast(tf.not_equal(domains, "<PAD>"), tf.float64),

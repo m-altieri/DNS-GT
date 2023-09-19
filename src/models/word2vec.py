@@ -25,7 +25,7 @@ class Word2Vec(tf.keras.Model):
         self.classifier.trainable = True
         self.finetuning = True
 
-    def __init__(self, conf):
+    def __init__(self, conf, dist_strategy):
         super(Word2Vec, self).__init__()
 
         # Logger
@@ -34,20 +34,25 @@ class Word2Vec(tf.keras.Model):
         self._logger.addHandler(logging.StreamHandler(sys.stdout))
 
         # Configuration
-        default_conf_file = "conf/W2V.yaml"
-        try:
-            with open(default_conf_file, "r") as f:
-                default_conf = yaml.safe_load(f)
-        except OSError as e:
-            self._logger.warning(
-                f"{Fore.RED}Could not open conf file {default_conf_file}:\n{e}"
-                + "\nTrying to default to argument configuration.{Style.RESET_ALL}"
-            )
-            default_conf = {}
-        self.conf = default_conf
-        for key in conf:
-            if conf[key] is not None:
-                self.conf[key] = conf[key]
+        self.conf = conf
+
+        # <--- REFACTORING OUT
+        # default_conf_file = "conf/W2V.yaml"
+        # try:
+        #     with open(default_conf_file, "r") as f:
+        #         default_conf = yaml.safe_load(f)
+        # except OSError as e:
+        #     self._logger.warning(
+        #         f"{Fore.RED}Could not open conf file {default_conf_file}:\n{e}"
+        #         + "\nTrying to default to argument configuration.{Style.RESET_ALL}"
+        #     )
+        #     default_conf = {}
+        # self.conf = default_conf
+        # for key in conf:
+        #     if conf[key] is not None:
+        #         self.conf[key] = conf[key]
+        # --->
+
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
         self.finetuning = False
 
@@ -57,13 +62,16 @@ class Word2Vec(tf.keras.Model):
             fold = np.load(
                 os.path.join(
                     self.conf.get("test_folds_path"),
+                    f"partition-{self.conf.get('test_partition')}",
                     f"fold-{self.conf.get('test_fold')}.npy",
                 )
             )
             self.test_fold = tf.constant(fold)
 
         # Distribution
-        self.dist_strategy = self.conf.get("dist_strategy", DummyStrategy)
+        self.dist_strategy = (
+            dist_strategy  # self.conf.get("dist_strategy", DummyStrategy)
+        )
         self.distributed = self.dist_strategy is not DummyStrategy
         if self.distributed:
             self._logger.info(
@@ -71,9 +79,14 @@ class Word2Vec(tf.keras.Model):
             )
 
         # TensorBoard Init
-        TB_FOLDER = "tensorboard"
+        TB_FOLDER = "../tensorboard"
         self.tb_path = None
-        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
+        self.train_step_count = tf.Variable(
+            0, trainable=False, dtype=tf.int64, name="train_step_count"
+        )
+        self.val_step_count = tf.Variable(
+            0, trainable=False, dtype=tf.int64, name="val_step_count"
+        )
         if not os.path.exists(TB_FOLDER):
             os.makedirs(TB_FOLDER)
         if not self.conf["quick_tb"]:
@@ -83,7 +96,9 @@ class Word2Vec(tf.keras.Model):
                 or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
             )
         else:
-            self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
+            self.tb_path = tf.summary.create_file_writer(
+                os.path.join(TB_FOLDER, "tmp")
+            )
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         # TODO <--- this is copied; make it external
@@ -102,12 +117,7 @@ class Word2Vec(tf.keras.Model):
 
         # Token Indexes Lookup
         self.domain_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.domains_vocabulary,
-            num_oov_indices=1 if self.conf.get("max_tokens") else 0,
-            # TODO now the [UNK] token is automatically added to the vocabulary by StringLookup when num_oov_indices=1;
-            # but I already have the <UNK> token in the vocabulary. I should remove <UNK> from the vocabulary generating script,
-            # and using the oov_token="<UNK>" parameter for StringLoopkup, to have a consistent format with the other special tokens.
-            # also, I should probably just set num_oov_indices=1 and remove <UNK> from the vocabulary altogether.
+            vocabulary=self.domains_vocabulary, num_oov_indices=1
         )
         # --->
 
@@ -121,274 +131,240 @@ class Word2Vec(tf.keras.Model):
         self.out = tf.keras.layers.Dense(self.ndomains)
         self.classifier = tf.keras.layers.Dense(1, activation="sigmoid")
 
-    @tf.function
     def call(self, inputs):
         target_idx, context_idx = inputs
 
-        target_embs = self.domain_embeddings(target_idx)
-        context_embs = self.domain_embeddings(context_idx)
+        target_embs = self.domain_embeddings(target_idx)  # [B, dim]
+        context_embs = self.domain_embeddings(context_idx)  # [B, L-1, dim]
 
-        if self.conf["type"] == "CBOW":  # for CBOW, x is the context, y is the target
-            if (
-                self.finetuning
-            ):  # if finetuning, the model can see the target too because it doesn't have to reconstruct it
-                context_emb = tf.math.reduce_sum(
-                    tf.concat(
-                        [context_embs, tf.expand_dims(target_embs, axis=1)], axis=1
-                    ),
-                    axis=1,
-                )
-            else:
+        if self.finetuning:
+            embs = tf.concat(
+                [context_embs, tf.expand_dims(target_embs, axis=1)], axis=1
+            )
+            hidden = self.hidden(embs)  # [B, L, dim]
+
+        else:  # if not self.finetuning
+            if self.conf["type"] == "CBOW":
+
                 context_emb = tf.math.reduce_sum(context_embs, axis=1)
-            hidden = self.hidden(context_emb)
-        elif (
-            self.conf["type"] == "SkipGram"
-        ):  # for SkipGram, x is the target, y is the context
-            hidden = self.hidden(target_embs)
+                hidden = self.hidden(context_emb)  # [B, dim]
+
+            elif self.conf["type"] == "SkipGram":
+                hidden = self.hidden(target_embs)  # [B, dim]
 
         out = self.out(hidden)
-        out = tf.nn.softmax(out)
-        c = self.classifier(hidden)
+        out = tf.nn.softmax(out)  # [B, vsize]
+        c = self.classifier(hidden)  # [B, L]
 
         return out if not self.finetuning else c
 
     @tf.function
     def distributed_train_step(self, seq):
         loss = self.dist_strategy.run(self.train_step, args=(seq,))
-        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+        return self.dist_strategy.reduce(
+            tf.distribute.ReduceOp.SUM, loss, axis=None
+        )
 
     @tf.function
     def distributed_test_step(self, seq):
         loss = self.dist_strategy.run(self.test_step, args=(seq,))
-        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
+        return self.dist_strategy.reduce(
+            tf.distribute.ReduceOp.SUM, loss, axis=None
+        )
 
     def train_step(self, seq):
+
         # seq: [B,L,1] or [B,L,2] se --ft
         L = tf.shape(seq)[1]
 
-        target_domains = seq[:, L // 2, 0]
+        # Get target domains (central ones) and context domains (others)
+        domains = seq[..., 0]  # [B, L]
+        target_domains = domains[:, L // 2]
         context_domains = tf.concat(
-            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+            [domains[:, : L // 2], domains[:, L // 2 + 1 :]], axis=-1
         )
-
         target_indexes = self.domain_lookup(target_domains)
         context_indexes = self.domain_lookup(context_domains)
 
         with tf.GradientTape() as tape:
-            pred = self((target_indexes, context_indexes), training=True)  # [B,vsize]
 
-            if self.conf.get("test_fold") is not None:
-                in_fold = tf.math.reduce_any(
-                    tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+            # Get predictions: [B, vsize] or [B, L]
+            pred = self((target_indexes, context_indexes), training=True)
+
+            # Create boolean mask with True if that domain is in test fold
+            if self.finetuning:
+                in_fold_mask = tf.math.reduce_any(
+                    tf.equal(tf.expand_dims(domains, axis=-1), self.test_fold),
                     axis=-1,
-                )
+                )  # [B, L]
 
             if self.conf["type"] == "CBOW":
-                label = (
-                    target_indexes
-                    if not self.finetuning
-                    else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
-                )
-                if self.finetuning:
+                if not self.finetuning:  # CBOW Pretraining
                     loss = self.compiled_loss(
-                        tf.boolean_mask(label, ~in_fold),
-                        tf.boolean_mask(pred, ~in_fold),
-                        regularization_losses=self.losses,
+                        target_indexes, pred, regularization_losses=self.losses
                     )
-                else:
-                    loss = self.compiled_loss(
-                        label, pred, regularization_losses=self.losses
-                    )
-            elif self.conf["type"] == "SkipGram":
-                if self.finetuning:
-                    loss = self.compiled_loss(
-                        tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[~in_fold],
-                        tf.squeeze(pred, axis=-1)[~in_fold],
-                        regularization_losses=self.losses,
-                    )
-                else:
-                    loss = tf.reduce_mean(
-                        tf.map_fn(
-                            lambda e: self.compiled_loss(
-                                e, pred, regularization_losses=self.losses
-                            ),
-                            tf.transpose(context_indexes),  # [L,B]
-                            fn_output_signature=tf.float32,
-                        ),
-                        axis=-1,
-                    )  # [B]
 
+                else:  # CBOW Finetuning
+                    loss = self.compiled_loss(
+                        tf.boolean_mask(
+                            tf.strings.to_number(seq[..., -1], tf.float32),
+                            ~in_fold_mask,
+                        ),
+                        tf.boolean_mask(pred, ~in_fold_mask),
+                        regularization_losses=self.losses,
+                    )
+
+            elif self.conf["type"] == "SkipGram":
+                if not self.finetuning:  # SkipGram Pretraining
+                    loss = self.compiled_loss(
+                        context_indexes,  # [B, L-1]
+                        tf.repeat(
+                            tf.expand_dims(pred, axis=1),
+                            tf.shape(context_indexes)[1],
+                            axis=1,
+                        ),  # [B, L, vsize]
+                        regularization_losses=self.losses,
+                    )
+                else:  # SkipGram Finetuning
+                    loss = self.compiled_loss(
+                        tf.boolean_mask(
+                            tf.strings.to_number(seq[..., -1], tf.float32),
+                            ~in_fold_mask,
+                        ),
+                        tf.boolean_mask(pred, ~in_fold_mask),
+                        regularization_losses=self.losses,
+                    )
+
+            # Divide loss by number of GPUs if distributed
             if self.distributed:
                 loss = tf.math.divide(
-                    tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+                    tf.math.reduce_mean(loss),
+                    self.dist_strategy.num_replicas_in_sync,
                 )
 
+        # Write training loss to TensorBoard
         if self.conf.get("tensorboard"):
             with self.tb_writer.as_default():
-                tf.summary.scalar("train_loss", loss, step=self.step)
+                tf.summary.scalar(
+                    "train_loss", loss, step=self.train_step_count
+                )
 
-        # Compute gradients and update weights
+        # Compute gradients and update weights, ignoring warnings about None gradients
         trainable_variables = self.trainable_variables
-
         gradients = tape.gradient(loss, trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+        self.optimizer.apply_gradients(
+            (grad, _)
+            for (grad, _) in zip(gradients, self.trainable_variables)
+            if grad is not None
+        )
 
-        # TensorBoard -- Increment step
-        self.step.assign_add(tf.constant(1, dtype=tf.int64))
+        # TensorBoard -- Increment train step
+        self.train_step_count.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
-        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
+        return loss
 
     def test_step(self, seq):
+
         # seq: [B,L,1] or [B,L,2] se --ft
         L = tf.shape(seq)[1]
 
-        target_domains = seq[:, L // 2, 0]
+        # Get target domains (central ones) and context domains (others)
+        domains = seq[..., 0]  # [B, L]
+        target_domains = domains[:, L // 2]
         context_domains = tf.concat(
-            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+            [domains[:, : L // 2], domains[:, L // 2 + 1 :]], axis=-1
         )
-
         target_indexes = self.domain_lookup(target_domains)
         context_indexes = self.domain_lookup(context_domains)
 
-        pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
+        # Get predictions: [B, vsize] or [B, L]
+        pred = self((target_indexes, context_indexes), training=False)
 
-        if self.conf.get("test_fold") is not None:
-            in_fold = tf.math.reduce_any(
-                tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+        # Create boolean mask with True if that domain is in test fold
+        if self.finetuning:
+            in_fold_mask = tf.math.reduce_any(
+                tf.equal(tf.expand_dims(domains, axis=-1), self.test_fold),
                 axis=-1,
-            )
-        if self.conf["type"] == "CBOW":
-            label = (
-                target_indexes
-                if not self.finetuning
-                else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
-            )
-            if self.finetuning:
-                loss = self.compiled_loss(
-                    tf.boolean_mask(label, in_fold),
-                    tf.boolean_mask(pred, in_fold),
-                    regularization_losses=self.losses,
-                )
-            else:
-                loss = self.compiled_loss(
-                    label, pred, regularization_losses=self.losses
-                )
-        elif self.conf["type"] == "SkipGram":
-            if self.finetuning:
-                loss = self.compiled_loss(
-                    tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[in_fold],
-                    tf.squeeze(pred, axis=-1)[in_fold],
-                    regularization_losses=self.losses,
-                )
-            else:
-                loss = tf.reduce_mean(
-                    tf.map_fn(
-                        lambda e: self.compiled_loss(
-                            e, pred, regularization_losses=self.losses
-                        ),
-                        tf.transpose(context_indexes),  # [L,B]
-                        fn_output_signature=tf.float32,
-                    ),
-                    axis=-1,
-                )  # [B]
+            )  # [B, L]
 
+        if self.conf["type"] == "CBOW":
+            if not self.finetuning:  # CBOW Pretraining
+                loss = self.compiled_loss(
+                    target_indexes, pred, regularization_losses=self.losses
+                )
+
+            else:  # CBOW Finetuning
+                loss = self.compiled_loss(
+                    tf.boolean_mask(
+                        tf.strings.to_number(seq[..., -1], tf.float32),
+                        ~in_fold_mask,
+                    ),
+                    tf.boolean_mask(pred, ~in_fold_mask),
+                    regularization_losses=self.losses,
+                )
+
+        elif self.conf["type"] == "SkipGram":
+            if not self.finetuning:  # SkipGram Pretraining
+                loss = self.compiled_loss(
+                    context_indexes,  # [B, L-1]
+                    tf.repeat(
+                        tf.expand_dims(pred, axis=1),
+                        tf.shape(context_indexes)[1],
+                        axis=1,
+                    ),  # [B, L, vsize]
+                    regularization_losses=self.losses,
+                )
+            else:  # SkipGram Finetuning
+                loss = self.compiled_loss(
+                    tf.boolean_mask(
+                        tf.strings.to_number(seq[..., -1], tf.float32),
+                        ~in_fold_mask,
+                    ),
+                    tf.boolean_mask(pred, ~in_fold_mask),
+                    regularization_losses=self.losses,
+                )
+
+        # Divide loss by number of GPUs if distributed
         if self.distributed:
             loss = tf.math.divide(
-                tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
+                tf.math.reduce_mean(loss),
+                self.dist_strategy.num_replicas_in_sync,
             )
 
+        # Write training loss to TensorBoard
         if self.conf.get("tensorboard"):
             with self.tb_writer.as_default():
-                tf.summary.scalar("val_loss", loss, step=self.step)
+                tf.summary.scalar("train_loss", loss, step=self.val_step_count)
+
+        # TensorBoard -- Increment val step
+        self.val_step_count.assign_add(tf.constant(1, dtype=tf.int64))
 
         # Return a dict mapping metric names to current value
-        return loss if self.distributed else {m.name: m.result() for m in self.metrics}
+        return loss
 
     def _predict(self, seq):
-        kwout = {}
 
         # seq: [B,L,1] or [B,L,2] se --ft
         L = tf.shape(seq)[1]
 
-        target_domains = seq[:, L // 2, 0]
+        # Get target domains (central ones) and context domains (others)
+        domains = seq[..., 0]  # [B, L]
+        target_domains = domains[:, L // 2]
         context_domains = tf.concat(
-            [seq[:, : L // 2, 0], seq[:, L // 2 + 1 :, 0]], axis=-1
+            [domains[:, : L // 2], domains[:, L // 2 + 1 :]], axis=-1
         )
-
         target_indexes = self.domain_lookup(target_domains)
         context_indexes = self.domain_lookup(context_domains)
 
-        pred = self((target_indexes, context_indexes), training=False)  # [B,vsize]
-        pred = tf.squeeze(pred, axis=-1)
-
-        if self.conf.get("test_fold") is not None:
-            in_fold = tf.math.reduce_any(
-                tf.equal(tf.expand_dims(target_domains, axis=-1), self.test_fold),
+        # Create boolean mask with True if that domain is in test fold
+        if self.finetuning:
+            in_fold_mask = tf.math.reduce_any(
+                tf.equal(tf.expand_dims(domains, axis=-1), self.test_fold),
                 axis=-1,
-            )
-            kwout["in_fold"] = tf.squeeze(in_fold)
-        if self.conf["type"] == "CBOW":
-            label = (
-                target_indexes
-                if not self.finetuning
-                else tf.strings.to_number(seq[:, L // 2, -1], tf.float32)
-            )
-            if self.finetuning:
-                loss = self.compiled_loss(
-                    tf.boolean_mask(label, in_fold),
-                    tf.boolean_mask(pred, in_fold),
-                    regularization_losses=self.losses,
-                )
-            else:
-                loss = self.compiled_loss(
-                    label, pred, regularization_losses=self.losses
-                )
-        elif self.conf["type"] == "SkipGram":
-            if self.finetuning:
-                loss = self.compiled_loss(
-                    tf.strings.to_number(seq[:, L // 2, -1], tf.float32)[in_fold],
-                    pred[in_fold],
-                    regularization_losses=self.losses,
-                )
-            else:
-                loss = tf.reduce_mean(
-                    tf.map_fn(
-                        lambda e: self.compiled_loss(
-                            e, pred, regularization_losses=self.losses
-                        ),
-                        tf.transpose(context_indexes),  # [L,B]
-                        fn_output_signature=tf.float32,
-                    ),
-                    axis=-1,
-                )  # [B]
+            )  # [B, L]
 
-        if self.distributed:
-            loss = tf.math.divide(
-                tf.math.reduce_mean(loss), self.dist_strategy.num_replicas_in_sync
-            )
+        # Get predictions: [B, vsize] or [B, L]
+        pred = self((target_indexes, context_indexes), training=True)
 
-        if self.conf.get("tensorboard"):
-            with self.tb_writer.as_default():
-                tf.summary.scalar("val_loss", loss, step=self.step)
-
-        return pred, None, kwout
-
-    @staticmethod
-    def create_pairs(seq, seqlen):
-        # Input: all queries
-        # Output: sequences having target domain at the middle. [..., context_-2, context_-1, target, context_+1, context_+2, ...]
-        assert seqlen % 2 == 1
-        window = seqlen // 2
-        pairs = []
-        for index, target in enumerate(seq):
-            left_overflow = max(window - index, 0)
-            right_overflow = max(window - (len(seq) - index - 1), 0)
-            pairs.append(
-                seq[
-                    max(0, index - window - right_overflow) : min(
-                        index + window + 1 + left_overflow, len(seq)
-                    )
-                ]
-            )
-        return pairs
+        return pred, None, in_fold_mask

@@ -1,11 +1,4 @@
-dim: 128
+queries_path: /mnt/storage15/TI-2016/npy/tokenized/trivial
 domains_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
 hosts_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/host_vocab.txt"
-mask_p:
-  mask: 0.8
-  same: 0.1
-  random: 0.1
-n_heads: 8
-omega: 1.0
-blocks: 8
-quick_tb: false
+test_folds_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/folds"

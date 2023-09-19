@@ -1,0 +1,353 @@
+import os
+import yaml
+import numpy as np
+import tensorflow as tf
+from typing import Dict, Any
+from colorama import Fore, Style
+
+
+class RunManager:
+    """Utility class to manage saved runs.
+    The project directory is expected to be organized as follows:
+    project_root/
+    ├── src/
+    └── runs/
+        ├── DELM/
+        │   ├── <run_name_1>/
+        │   │   ├── weights.h5
+        │   │   ├── embeddings.npy
+        │   │   ├── conf.yaml
+        |   |   └── predictions.csv
+        │   └── <run_name_2>/
+        │       ├── weights.h5
+        │       ├── embeddings.npy
+        │       ├── conf.yaml
+        |       └── predictions.csv
+        ├── W2V-CBOW/
+        │   ├── <run_name_1>/
+        │   │   ├── weights.h5
+        │   │   ├── embeddings.npy
+        │   │   ├── conf.yaml
+        │   └── <run_name_2>/
+        │       ├── weights.h5
+        │       ├── embeddings.npy
+        │       ├── conf.yaml
+        |       └── predictions.csv
+        └── W2V-SkipGram/
+            └── <run_name>/
+                ├── weights.h5
+                ├── embeddings.npy
+                ├── conf.yaml
+                └── predictions.csv
+    """
+
+    # Static constants
+    _PROJECT_ROOT = ".."
+    _WEIGHTS_FILE_NAME = "weights.h5"
+    _WEIGHTS_FINETUNING_FILE_NAME = "weights.finetuning.h5"
+    _EMBEDDINGS_FILE_NAME = "embeddings.npy"
+    _CONF_FILE_NAME = "conf.yaml"
+    _PREDICTIONS_FOLDER_NAME = "predictions"
+    _DEFAULT_CONF_FILE_NAME = "default.yaml"
+
+    # These fields will not be saved
+    _CONF_WHITELIST = {"demo", "eager", "finetune", "from_pretrained"}
+
+    def __init__(
+        self,
+        model_object: tf.keras.Model,
+        model_name: str,
+        run_name: str = None,
+        last: bool = False,
+        verbose: bool = False,
+    ):
+        # Initialize parameters
+        self.model_object = model_object
+        self.model_name = model_name
+        self.run_name = run_name
+        self.last = last
+        self.verbose = verbose
+
+        # Create path if it doesn't exist
+        if not os.path.exists(
+            os.path.join(
+                self._PROJECT_ROOT, "runs", self.model_name, self.run_name
+            )
+        ):
+            os.makedirs(
+                os.path.join(
+                    self._PROJECT_ROOT, "runs", self.model_name, self.run_name
+                )
+            )
+
+        # Store correct paths for weights, embeddings and conf
+        (
+            self.run_path,
+            self.weights_path,
+            self.embeddings_path,
+            self.conf_path,
+            self.predictions_path,
+        ) = self._get_paths(model_name, run_name)
+
+    def exist_weights(self):
+        """Returns True if weights exist for this run.
+
+        Returns:
+            exists (bool): True if weights exist, False otherwise.
+        """
+        return os.path.exists(self.weights_path)
+
+    def _assert_and_get_model(self, model_object=None):
+        if model_object is None and self.model_object is None:
+            raise ValueError(
+                f"{Fore.RED}[ERROR] At least one between model_object and self.model_object must not be None.{Fore.RESET}"
+            )
+        if model_object is None:
+            return self.model_object
+        else:
+            return model_object
+
+    def save_weights(self, model_object: tf.keras.Model = None) -> None:
+
+        model_object = self._assert_and_get_model(model_object)
+        try:
+            model_object.save_weights(self.weights_path)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while saving "
+                + f"model weights to {self.weights_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Model weights successfully saved to {self.weights_path}.{Fore.RESET}"
+            )
+
+    def save_embeddings(self, model_object: tf.keras.Model = None) -> None:
+
+        model_object = self._assert_and_get_model(model_object)
+        try:
+            domain_embeddings = (
+                model_object.domain_embeddings.embeddings.numpy()
+            )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
+            np.save(self.embeddings_path, domain_embeddings)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while saving "
+                + f"model embeddings to {self.weights_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Model embeddings successfully saved to {self.embeddings_path}.{Fore.RESET}"
+            )
+
+    def save_conf(self, model_object: tf.keras.Model = None) -> None:
+
+        model_object = self._assert_and_get_model(model_object)
+
+        conf_to_save = dict(model_object.conf)
+
+        # Remove whitelisted fields from dict (they won't be saved)
+        for field in self._CONF_WHITELIST:
+            conf_to_save.pop(field)
+
+        try:
+            with open(self.conf_path, "w") as f:
+                yaml.safe_dump(
+                    conf_to_save, f, default_flow_style=False, sort_keys=False
+                )
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while saving "
+                + f"the conf file to {self.weights_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Configuration file successfully saved to {self.conf_path}.{Fore.RESET}"
+            )
+
+    def save_predictions(self, predictions, test_partition, test_fold):
+
+        # Create predictions folder if it doesn't exist
+        if not os.path.exists(self.predictions_path):
+            os.makedirs(self.predictions_path)
+
+        save_path = os.path.join(
+            self.predictions_path,
+            f"predictions-partition{test_partition}-fold{test_fold}.csv",
+        )
+        try:
+            predictions.to_csv(save_path)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while saving "
+                + f"predictions to {save_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Predictions successfully saved to {save_path}.{Fore.RESET}"
+            )
+
+    def load_weights(self, model_object: tf.keras.Model = None):
+        if model_object is None:
+            model_object = self.model_object
+
+        # try to load weights into the model
+        try:
+            model_object.load_weights(self.weights_path)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while loading "
+                + f"model weights from {self.weights_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Model weights successfully loaded from {self.weights_path}.{Fore.RESET}"
+            )
+        return model_object
+
+    def load_embeddings(self):
+        # try to load embeddings as numpy array
+        embeddings = None
+        try:
+            embeddings = np.load(self.embeddings_path)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while loading "
+                + f"model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        if self.verbose:
+            print(
+                f"{Fore.GREEN}[INFO] Model embeddings successfully loaded from {self.embeddings_path}.{Fore.RESET}"
+            )
+        return embeddings
+
+    def load_conf(self):
+        conf = {}
+
+        # Load default root conf as a base
+        default_root_conf_path = os.path.join(
+            self._PROJECT_ROOT, "runs", self._DEFAULT_CONF_FILE_NAME
+        )
+        try:
+            with open(
+                default_root_conf_path,
+                "r",
+            ) as f:
+                conf = conf | yaml.safe_load(f)
+        except:
+            print(
+                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_root_conf_path}."
+                + f"\nMake sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
+            )
+
+        # Load default model conf and override the root one
+        default_model_conf_path = os.path.join(
+            self._PROJECT_ROOT,
+            "runs",
+            self.model_name,
+            self._DEFAULT_CONF_FILE_NAME,
+        )
+        try:
+            with open(
+                default_model_conf_path,
+                "r",
+            ) as f:
+                conf = conf | yaml.safe_load(f)
+        except:
+            print(
+                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_model_conf_path}."
+                + f"\nMake sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
+            )
+
+        # Load run-specific conf and override the default model one
+        try:
+            with open(self.conf_path, "r") as f:
+                conf = conf | yaml.safe_load(f)
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Conf file successfully loaded from {self.conf_path}.{Fore.RESET}"
+                )
+        except:
+            print(
+                f"{Fore.YELLOW}[INFO] Conf file not found for {self.run_name} in {self.conf_path}. Starting from scratch.{Fore.RESET}"
+            )
+
+        return conf
+
+    def _get_paths(
+        self,
+        model_name: str = None,
+        run_name: str = None,
+        finetuning: bool = False,
+        **kwargs,
+    ):
+
+        # check for ValueErrors
+        if self.model_name is None and model_name is None:
+            raise ValueError(
+                f"{Fore.RED}model_name must be specified.{Fore.RESET}"
+            )
+        if self.run_name is None and run_name is None and not self.last:
+            raise ValueError(
+                f"{Fore.RED}run_name must be specified if load is False."
+                + f"{Fore.RESET}"
+            )
+
+        # if model_name is None, use the one provided in the constructor
+        if model_name is None:
+            model_name = self.model_name
+
+        # if model_name is None, use the one provided in the constructor
+        if run_name is None:
+            run_name = self.run_name
+
+        # if load_last, load the last run for the given model name
+        if self.last:
+            runs = os.listdir(
+                os.path.join(self._PROJECT_ROOT, "runs", model_name)
+            )
+
+            # if there are no runs for the given model name, raise an error
+            if len(runs) == 0:
+                raise FileNotFoundError(
+                    f"{Fore.RED}No run found for model {model_name}.{Fore.RESET}"
+                )
+
+            # get "last modified time" for each run
+            lm_times = [
+                os.path.getmtime(
+                    os.path.join(self._PROJECT_ROOT, "runs", model_name, run)
+                )
+                for run in runs
+            ]
+
+            # set run_name equal to run having the highest "last modified" time
+            run_name = runs[lm_times.index(max(lm_times))]
+
+        # set weights, embeddings, conf and predictions paths
+        run_path = os.path.join(
+            self._PROJECT_ROOT, "runs", model_name, run_name
+        )
+        weights_path = os.path.join(
+            run_path,
+            self._WEIGHTS_FILE_NAME
+            if not finetuning
+            else self._WEIGHTS_FINETUNING_FILE_NAME,
+        )
+        embeddings_path = os.path.join(run_path, self._EMBEDDINGS_FILE_NAME)
+        conf_path = os.path.join(run_path, self._CONF_FILE_NAME)
+        predictions_path = os.path.join(run_path, self._PREDICTIONS_FOLDER_NAME)
+
+        return (
+            run_path,
+            weights_path,
+            embeddings_path,
+            conf_path,
+            predictions_path,
+        )

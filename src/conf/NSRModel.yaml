@@ -1,4 +1,0 @@
-host_dim: 32
-domain_dim: 32
-host_code_dim: 8
-domain_code_dim: 8

@@ -1,36 +1,52 @@
 import os
 import json
+import argparse
 import numpy as np
 import pandas as pd
-import argparse
 from colorama import Style
-from sklearn.metrics import confusion_matrix, f1_score, accuracy_score, roc_auc_score
+from sklearn.metrics import (
+    confusion_matrix,
+    f1_score,
+    accuracy_score,
+    roc_auc_score,
+)
 
-# Binary
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+# Binary models
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 
-# Oneclass
+# Oneclass models
+from pyod.models.vae import VAE
 from pyod.models.abod import ABOD
 from pyod.models.hbos import HBOS
-from pyod.models.vae import VAE
-from pyod.models.copod import COPOD
 from pyod.models.suod import SUOD
+from pyod.models.copod import COPOD
 
 
 def parse_args():
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("emb_file", action="store")
+    argparser.add_argument(
+        "emb_file", action="store", help="Path to the embeddings file."
+    )
     argparser.add_argument("-b", "--balanced", action="store_true")
     argparser.add_argument(
         "--category",
         action="store",
         default="any",
-        choices=["advertising", "malicious", "suspicious", "tracking", "other", "any"],
+        choices=[
+            "advertising",
+            "malicious",
+            "suspicious",
+            "tracking",
+            "other",
+            "any",
+        ],
     )
-    argparser.add_argument("--q", action="store", default="ok", choices=["good", "ok"])
+    argparser.add_argument(
+        "--q", action="store", default="ok", choices=["good", "ok"]
+    )
     argparser.add_argument("--max-tokens", action="store", type=int)
     args = argparser.parse_args()
     return args
@@ -73,7 +89,9 @@ def main():
     # print(labels)
 
     # Get vocabulary
-    vocab_path = os.path.join("../data", "vocabs", "all", "exp", "domains_vocab.txt")
+    vocab_path = os.path.join(
+        "../data", "vocabs", "all", "exp", "domains_vocab.txt"
+    )
     with open(vocab_path, "r") as f:
         vocab = [l.strip() for l in f.readlines()]
 
@@ -127,7 +145,9 @@ def main():
 
     # Get indexes of domains in test fold
     test_domains = np.load("../data/vocabs/small/exp/test_folds5/fold-2.npy")
-    test_indexes = np.sort(np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1])
+    test_indexes = np.sort(
+        np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1]
+    )
 
     train_X = np.delete(X, test_indexes, axis=0)
     train_y = np.delete(y, test_indexes, axis=0)
@@ -167,12 +187,16 @@ def main():
             **Models[Model].get("kwargs", {}),
         )
         model.fit(
-            X=oneclass_train_X if Models[Model]["conf"].get("oneclass") else train_X,
+            X=oneclass_train_X
+            if Models[Model]["conf"].get("oneclass")
+            else train_X,
             y=None if Models[Model]["conf"].get("oneclass") else train_y,
         )
 
         # Predict and save preds
-        preds, probs = model.predict(test_X)  # it gives me the prob for the two classes
+        preds, probs = model.predict(
+            test_X
+        )  # it gives me the prob for the two classes
         probs = probs[:, 1]
 
         df = pd.DataFrame(
@@ -211,7 +235,9 @@ def get_balanced_indices(labels):
             "For now, negative samples must be more than positive ones"  # TODO
         )
     pos_idx = np.where(labels == 1)[0]
-    neg_idx = np.random.choice(np.where(labels == 0)[0], len(pos_idx), replace=False)
+    neg_idx = np.random.choice(
+        np.where(labels == 0)[0], len(pos_idx), replace=False
+    )
     return np.sort(np.concatenate((neg_idx, pos_idx)))
 
 

@@ -3,7 +3,9 @@ import numpy as np
 from sklearn.cluster import DBSCAN
 
 
-def get_clusters_from_timestamp(queries, eps=lambda deltas: np.percentile(deltas, 50)):
+def get_clusters_from_timestamp(
+    queries, eps=lambda deltas: np.percentile(deltas, 50)
+):
     """Get a list of labels mapping each item in the input array to a cluster.
     Uses the DBSCAN density-based clustering algorithm.
 
@@ -17,10 +19,13 @@ def get_clusters_from_timestamp(queries, eps=lambda deltas: np.percentile(deltas
     """
     deltas = queries[1:, -1] - queries[:-1, -1]
     avg_delta = np.mean(deltas)
-    try:  # TODO remove the try-except block once you figure out the bug
+    try:
         std_delta = np.std(deltas)
+    # TODO is this a legit use case? a host with a single query? is it supposed to happen?
     except ZeroDivisionError as e:
-        print(f"[WARN] Found a host with a single query: {queries}. Returning [-1].")
+        print(
+            f"[WARN] Found a host with a single query: {queries}. Returning [-1]."
+        )
         return [-1]
 
     dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, -1], -1))
@@ -28,11 +33,19 @@ def get_clusters_from_timestamp(queries, eps=lambda deltas: np.percentile(deltas
 
 
 def pad(sequence, to_len, token="<PAD>"):
-    return np.pad(
+
+    pad_width = to_len - len(sequence)
+    sequence = np.pad(
         sequence,
-        ((0, to_len - len(sequence)), (0, 0)),
+        ((0, pad_width), (0, 0)),
         constant_values=token,
     )
+
+    # If sequence has 3 columns (includes class), then the class for <PAD> is 0
+    if np.shape(sequence)[1] == 3:
+        sequence[-pad_width:] = [token, token, 0]
+
+    return sequence
 
 
 if __name__ == "__main__":

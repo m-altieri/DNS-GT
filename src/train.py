@@ -4,32 +4,29 @@ import time
 import logging
 import argparse
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
 from tqdm import tqdm
 import sklearn.metrics
 import matplotlib.pyplot as plt
 from colorama import Fore, Style
-from typing import Any, Iterator
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
-from tensorflow.keras.callbacks import ModelCheckpoint
-
 from models import DELM, Word2Vec
-from utils.distribute import DummyStrategy
-from utils.sequencing import get_clusters_from_timestamp, pad
+
 from utils.data_loader import (
     SequenceGenerator,
-    SequencingStrategy,
     FixedSequencingStrategy,
     ClusterSequencingStrategy,
+    W2VStrategy,
 )
+from utils.runs_management import RunManager
+from utils.distribute import DummyStrategy
 
 
-def config_gpus(args):
-    if isinstance(args.gpu, int):
-        device = tf.config.list_physical_devices("GPU")[args.gpu]
+def config_gpus(conf):
+    if isinstance(conf.get("gpu"), int):
+        device = tf.config.list_physical_devices("GPU")[conf.get("gpu")]
         tf.config.set_visible_devices(device, "GPU")
         print(f"Set {device} as the only visible device.")
     for device in tf.config.get_visible_devices("GPU"):
@@ -49,9 +46,11 @@ def get_logger(verbose=False):
     return logger
 
 
-def build_model(model, args, **kwargs):
-    loss_reduction = tf.keras.losses.Reduction.NONE if args.distribute else "auto"
-    if args.finetune:
+def build_model(model, conf, dist_strategy):
+    loss_reduction = (
+        tf.keras.losses.Reduction.NONE if conf.get("distribute") else "auto"
+    )
+    if conf.get("finetune"):
         loss = tf.keras.losses.BinaryCrossentropy(
             from_logits=False, reduction=loss_reduction
         )
@@ -59,20 +58,22 @@ def build_model(model, args, **kwargs):
         loss = tf.keras.losses.SparseCategoricalCrossentropy(
             from_logits=False, reduction=loss_reduction
         )
-    with kwargs["dist_strategy"].scope():
+    with dist_strategy.scope():
         if model.lower() == "delm":
-            model = DELM(vars(args) | kwargs)
+            model = DELM(conf, dist_strategy)
         elif model.lower() == "w2v":
-            model = Word2Vec(vars(args) | kwargs)
+            model = Word2Vec(conf, dist_strategy)
         model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
+            optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
             loss=loss,
             metrics=[],
-            run_eagerly=args.eager,
+            run_eagerly=conf.get("eager"),
         )
         return model
 
 
+# TODO Refactor out argument parsing
+# Also, I don't really need defaults now that I pull them from the default.yaml file
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("model", action="store", default="DELM")
@@ -97,7 +98,6 @@ def parse_args():
     argparser.add_argument(
         "--epochs",
         action="store",
-        default=5,
         type=int,
         help="Number of training epochs",
     )
@@ -119,12 +119,14 @@ def parse_args():
         help="Used for debugging purposes; choose the test sequence index",
     )
     argparser.add_argument(
-        "--seqlen", action="store", default=32, type=int, help="Maximum sequence length"
+        "--seqlen",
+        action="store",
+        type=int,
+        help="Maximum sequence length",
     )
     argparser.add_argument(
         "--stride",
         action="store",
-        default=1,
         type=int,
         help="Stride between sequences (how many queries to shift by)",
     )
@@ -136,9 +138,13 @@ def parse_args():
     argparser.add_argument(
         "--version",
         action="store",
-        choices=["small", "all", "clean"],  # TODO clean should become the normal one
+        choices=[
+            "small",
+            "all",
+            "clean",
+        ],  # TODO clean should become the normal (and only) one
         default="clean",
-        help="Deprecated. Version of the dataset used.",
+        help="Deprecated. Version of the dataset used.",  # TODO deprecate
     )
     argparser.add_argument(
         "--tiny",
@@ -160,7 +166,9 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
+    argparser.add_argument(
+        "--group-by-host", action="store", default=True, type=bool
+    )
     argparser.add_argument(
         "--run-name",
         action="store",
@@ -192,12 +200,18 @@ def parse_args():
         help="Freeze all layers except the classification ones. Only has effect if --finetune.",
     )
     argparser.add_argument(
+        "--test-partition",
+        type=int,
+        help="Test partition to choose during finetuning. "
+        + "Only has effect if --finetune.",
+    )
+    argparser.add_argument(
         "--test-fold",
         type=int,
         help="Test fold to choose during finetuning. "
         + "Domains contained in the fold will not be used for loss computation, making them suitable for testing. "
         + "If not set, all domains will be considered during loss computation. "
-        + "Only has effect if --finetune.",  # TODO Now it is mandatory if --finetune, otherwise there are errors. Make it optional
+        + "Only has effect if --finetune.",
     )
     argparser.add_argument(
         "--from-pretrained",
@@ -212,8 +226,8 @@ def parse_args():
         "--seq-strategy",
         action="store",
         choices=["cluster", "fixed"],
-        default="cluster",
     )
+    argparser.add_argument("--evaluate", action="store_true")
 
     args = argparser.parse_args()
 
@@ -225,196 +239,36 @@ def parse_args():
         pass
     try:
         if "[" in args.gpu:  # if it is a list
-            args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
+            args.gpu = [
+                int(i) for i in args.gpu.strip("[").strip("]").split(",")
+            ]
     except:  # it is not a list, let's try with a number
         pass
     if isinstance(args.gpu, list) or args.gpu == "all":
         args.distribute = True
-        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
+        assert tf.config.get_visible_devices(
+            "GPU"
+        ) == tf.config.list_physical_devices(
             "GPU"
         )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
     else:
         args.distribute = False
 
-    if args.demo:
-        args.eager = True
-        args.tensorboard = True
-        args.gpu = None
-        args.distribute = False
-        args.bs = 1
     return args
-
-
-# TODO <----------------------------- ALL THIS IS BEING REFACTORED OUT
-#
-# def seq_generator_from_folder(input_folder: str, **kwargs) -> Iterator[np.ndarray]:
-#     """Create a generator for the tf.data API.
-
-#     Args:
-#         input_folder (str): folder containing .npy files, each representing a matrix of shape (n_queries, 2).
-
-#     Keyword args:
-#         seqlen (int): maximum sequence length
-#         strategy (str): sequencing strategy. If "cluster", sequences will be created by splitting
-#         queries based on their timestamp, resulting in sequences of different lengths being padded.
-#         Each query will appear in a single sequence.
-#         If "fixed", sequences will be cut at exactly seqlen, disregarding the timestamp.
-#         Each query will appear in multiple sequences, depending on the stride value.
-#         stride (int): if strategy is "fixed", by how many queries to shift after each sequence
-#         include_start (bool): Deprecated. whether to include a <START> token at the beginning of the sequence
-#         include_class (bool): used in finetuning to include the class label of each query
-#         group_hosts (bool): whether each sequence should have only queries from the same host
-#         model (str): model to use. Either "delm" or "w2v"
-#         vocab (str): domains vocabulary. Only used in finetuning
-#         tiny_amount (bool): Deprecated. Whether to use a small number of queries for debugging purposes
-#         verbose (bool): whether to print additional debugging info
-
-#     Yields:
-#         iter: a generator that yields input sequences for the model
-#     """
-
-#     for f in os.listdir(input_folder):
-#         if os.path.splitext(os.path.join(input_folder, f))[-1] != ".npy":
-#             continue
-
-#         seqs = _create_sequences(os.path.join(input_folder, f), **kwargs)
-#         for seq in seqs:
-#             # print("seq:", seq)
-#             yield seq
-
-
-# def _create_sequences(input_file: str, **kwargs: Any):
-#     queries: np.ndarray[object] = np.load(input_file, allow_pickle=True)
-#     if kwargs.get("tiny_amount"):
-#         queries = queries[:10000]
-#     if kwargs.get("include_class"):
-#         labels = pd.read_csv(
-#             os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
-#         )
-#         labels.columns = pd.MultiIndex.from_tuples(
-#             [
-#                 ("domain", ""),
-#                 ("advertising", "good"),
-#                 ("advertising", "ok"),
-#                 ("malicious", "good"),
-#                 ("malicious", "ok"),
-#                 ("suspicious", "good"),
-#                 ("suspicious", "ok"),
-#                 ("tracking", "good"),
-#                 ("tracking", "ok"),
-#                 ("other", "good"),
-#                 ("other", "ok"),
-#                 ("any", "good"),
-#                 ("any", "ok"),
-#             ]
-#         )
-#         # Only use labels for domains in embs (i.e. in the vocabulary)
-#         labels = labels[labels["domain"].isin(kwargs.get("vocab"))]
-#         labels = labels.reset_index()
-
-#         # take (any, ok) column
-#         labels = labels[["domain", "any"]]
-#         labels = labels.to_numpy()[:, [0, 2]]
-
-#         # add class to each query
-#         sorter = np.argsort(labels[:, 0])
-#         idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
-#         classes = labels[idx, 1]
-#         queries = np.concatenate(
-#             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
-#         )
-#     if kwargs.get(
-#         "group_hosts"
-#     ):  # sort queries by host, and within each host by timestamp
-#         queries = queries[np.lexsort((queries[:, -1], queries[:, 0]))]
-#     seqs = []
-
-#     if kwargs.get("model") == "delm":
-#         if kwargs.get("strategy") == "cluster":
-#             for host in np.unique(queries[:, 0]):  # for each unique host
-
-#                 # get queries made by the current host
-#                 host_queries = queries[np.where(queries[:, 0] == host)[0]]
-
-#                 # get cluster labels of that host's queries
-#                 host_cluster_labels = get_clusters_from_timestamp(host_queries)
-
-#                 # from each of those clusters we are going to make a sequence
-#                 for c in range(np.max(host_cluster_labels) + 1):
-
-#                     cluster = host_queries[
-#                         np.where(host_cluster_labels == c)
-#                     ]  # get queries associated to the current cluster label
-
-#                     cluster = cluster[
-#                         :, :-1
-#                     ]  # remove timestamp once it's no longer needed
-
-#                     # take first element of the domain (the domain is a list with always one token)
-#                     # TODO this is only ok for the trivial tokenizer
-#                     cluster = [[q[0], q[1][0]] for q in cluster]
-
-#                     # truncate clusters (sequences) longer than seqlen, moving the excess to a new sequence
-#                     while len(cluster) > kwargs.get("seqlen"):
-#                         if kwargs.get("verbose"):
-#                             print(
-#                                 f"[INFO] Truncating sequence with cluster ID {c} for host {host}: length of {len(cluster)} exceeds seqlen of {kwargs.get('seqlen')}."
-#                             )
-#                         truncated_cluster = cluster[: kwargs.get("seqlen")]
-
-#                         seqs.append(truncated_cluster)
-#                         cluster = cluster[kwargs.get("seqlen") :]
-
-#                     # this sequence will not be full, so we have to pad it to seqlen
-#                     seqs.append(pad(cluster, kwargs.get("seqlen")))
-
-#         elif (
-#             kwargs.get("strategy") == "fixed"
-#         ):  # output [queries - stride, seqlen, 2 or 3]
-
-#             # if the timestamp is present, remove it
-#             if np.shape(queries)[-1] == 3 + kwargs.get("include_class"):
-#                 queries = queries[..., :-1]
-#             print(f"queries: {queries.shape}")
-
-#             # if the domain is a list (tokenized), take the first element
-#             # TODO Only ok for TrivialTokenizer!!
-#             queries = [[q[0], q[1][0]] for q in queries]
-
-#             actual_seqlen = kwargs.get("seqlen") - kwargs.get("include_start")
-#             seqs = np.empty(
-#                 shape=(
-#                     (len(queries) - actual_seqlen) // kwargs.get("stride") + 1,
-#                     kwargs.get("seqlen"),
-#                     2 + kwargs.get("include_class"),
-#                 ),
-#                 dtype=object,
-#             )
-#             for i, _ in enumerate(seqs):
-#                 if kwargs.get("include_start"):
-#                     seqs[i][0] = ["<START>", "<START>"]
-#                 seqs[i][kwargs.get("include_start") :] = queries[
-#                     i * kwargs.get("stride") : i * kwargs.get("stride") + actual_seqlen
-#                 ]
-#         else:
-#             raise ValueError("'strategy' kwarg must be either 'cluster' or 'fixed'.")
-
-#         seqs = np.array(seqs, dtype=str)
-
-#     elif kwargs.get("model") == "w2v":  # output [queries, seqlen]
-#         seqs = np.array(Word2Vec.create_pairs(queries[:, 1:], kwargs.get("seqlen")))
-#     else:
-#         raise ValueError("Specify model to create sequences.")
-
-#     return seqs
-# ----------------------------->
 
 
 def find_last_checkpoint(dir):
     if len(os.listdir(dir)) > 0:
         checkpoint = os.listdir(dir)[
-            [os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)].index(
-                max([os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)])
+            [
+                os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)
+            ].index(
+                max(
+                    [
+                        os.path.getmtime(os.path.join(dir, f))
+                        for f in os.listdir(dir)
+                    ]
+                )
             )
         ]
     else:
@@ -422,8 +276,8 @@ def find_last_checkpoint(dir):
     return checkpoint
 
 
-def default_checkpoint(args):
-    return f"{args.run_name}.h5"
+def default_checkpoint(conf):
+    return f"{conf.get('run_name')}.h5"
 
 
 def indent(depth=1):
@@ -433,92 +287,101 @@ def indent(depth=1):
 def main():
     args = parse_args()
 
+    # Initialize logger
     logger = get_logger(args.verbose)
-    logger.info("Started training with args:")
-    logger.info("\n".join([f"{indent(1)}{k}: {vars(args)[k]}" for k in vars(args)]))
+    logger.info(f"Starting program with args: {vars(args)}\n")
 
-    path = "/mnt/storage15/TI-2016/npy/tokenized/trivial"
-    queries_path = path
-    domains_vocab_path = os.path.join(path, "domain_vocab.txt")
-    domains_vocab_path = os.path.join(path, "host_vocab.txt")
+    # Manage save folder
+    run_manager = RunManager(
+        model_object=None,
+        model_name=f"{args.model}{f'-{args.type}' if args.type else ''}",
+        run_name=args.run_name,
+        last=args.load == "last",
+        verbose=True,
+    )
 
-    with open(domains_vocab_path, "r") as f:
-        domains_vocab = [l.strip() for l in f.readlines()]
+    # Manage model configuration
+    conf = run_manager.load_conf()
 
-    config_gpus(args)
+    superseding_args = {
+        k: v
+        for (k, v) in vars(args).items()
+        if conf.get(k) != v and v is not None
+    }
+
+    conf = conf | superseding_args
+    conf_log = "\n".join(
+        [
+            f"{Fore.YELLOW if k in superseding_args and conf != superseding_args else ''}{indent(1)}{k:<20}: {v}{Fore.RESET}"
+            for (k, v) in conf.items()
+        ]
+    )
+    logger.info(f"Configuration: \n{conf_log}")
+
+    config_gpus(conf)
 
     sequencing_strategy = None
-    if args.seq_strategy == "fixed":
+    if conf.get("seq_strategy") == "fixed":
         sequencing_strategy = FixedSequencingStrategy()
-    elif args.seq_strategy == "cluster":
+    elif conf.get("seq_strategy") == "cluster":
         sequencing_strategy = ClusterSequencingStrategy()
+    elif conf.get("model") == "W2V":
+        sequencing_strategy = W2VStrategy()
     else:
         raise ValueError()
 
     train = tf.data.Dataset.from_generator(
         SequenceGenerator(
-            os.path.join(queries_path, "train"),
+            os.path.join(conf.get("queries_path"), "train"),
             sequencing_strategy,
-            args.seqlen,
-            args.finetune,
-            args.group_by_host,
+            conf.get("seqlen"),
+            conf.get("finetune"),
+            conf.get("group_by_host"),
+            stride=conf.get("stride"),
+            include_start=conf.get("include_start"),
         ),
-        # lambda: seq_generator_from_folder(
-        #     os.path.join(queries_path, "train"),
-        #     seqlen=args.seqlen,
-        #     strategy=args.seq_strategy,
-        #     stride=args.stride,
-        #     include_start=args.include_start,
-        #     include_class=args.finetune,
-        #     group_hosts=args.group_by_host,
-        #     model=args.model.lower(),
-        #     vocab=domains_vocab,
-        #     tiny_amount=args.tiny,
-        #     verbose=False,
-        # ),
         output_signature=tf.TensorSpec(
-            shape=[args.seqlen, 2 + args.finetune], dtype=tf.string
+            shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
+            dtype=tf.string,
         )
-        if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=[args.seqlen, 1 + args.finetune], dtype=tf.string),
+        if conf.get("model").lower() == "delm"
+        else tf.TensorSpec(
+            shape=[conf.get("seqlen"), 1 + conf.get("finetune")],
+            dtype=tf.string,
+        ),
     )
     test = tf.data.Dataset.from_generator(
         SequenceGenerator(
-            os.path.join(queries_path, "test"),
+            os.path.join(conf.get("queries_path"), "test"),
             sequencing_strategy,
-            args.seqlen,
-            args.finetune,
-            args.group_by_host,
+            conf.get("seqlen"),
+            conf.get("finetune"),
+            conf.get("group_by_host"),
+            stride=conf.get("stride"),
+            include_start=conf.get("include_start"),
         ),
-        # lambda: seq_generator_from_folder(
-        #     os.path.join(queries_path, "test"),
-        #     seqlen=args.seqlen,
-        #     strategy=args.seq_strategy,
-        #     stride=args.stride,
-        #     include_start=args.include_start,
-        #     include_class=args.finetune,
-        #     group_hosts=args.group_by_host,
-        #     model=args.model.lower(),
-        #     vocab=domains_vocab,
-        #     tiny_amount=args.tiny,
-        #     verbose=False,
-        # ),
         output_signature=tf.TensorSpec(
-            shape=[args.seqlen, 2 + args.finetune], dtype=tf.string
+            shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
+            dtype=tf.string,
         )
-        if args.model.lower() == "delm"
-        else tf.TensorSpec(shape=[args.seqlen, 1 + args.finetune], dtype=tf.string),
+        if conf.get("model").lower() == "delm"
+        else tf.TensorSpec(
+            shape=[conf.get("seqlen"), 1 + conf.get("finetune")],
+            dtype=tf.string,
+        ),
     )
-    if not args.demo and args.shuffle:
+    if not conf.get("demo") and conf.get("shuffle"):
         train = train.shuffle(1000000)
-    train = train.batch(args.bs).prefetch(tf.data.AUTOTUNE)
-    test = test.batch(args.bs).prefetch(tf.data.AUTOTUNE)
+    train = train.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
+    test = test.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
 
-    # Distribution
+    # Manage training distribution
     dist_strategy = None
-    if args.distribute:
+    if conf.get("distribute"):
         gpus = (
-            [f"/gpu:{i}" for i in args.gpu] if isinstance(args.gpu, list) else None
+            [f"/gpu:{i}" for i in conf.get("gpu")]
+            if isinstance(conf.get("gpu"), list)
+            else None
         )  # initializing MirroredStrategy with None uses all gpus
         dist_strategy = tf.distribute.MirroredStrategy(gpus)
         logger.warning(
@@ -538,69 +401,49 @@ def main():
         dist_strategy = DummyStrategy
 
     # Build Model
-    model = build_model(
-        args.model,
-        args,
-        dist_strategy=dist_strategy,
-    )
-    if args.finetune:  # freeze all layers but the last classification layer
+    model = build_model(conf.get("model"), conf, dist_strategy=dist_strategy)
+
+    # Save the updated configuration
+    run_manager.model_object = model
+    run_manager.save_conf()
+
+    # If finetune, freeze all layers but the last classification layer,
+    # otherwise, unfreeze in case it was frozen
+    if conf.get("finetune"):
         model.finetune()
-    else:  # unfreeze in case it was frozen
+    else:
         model.pretrain()
 
-    # Manage checkpoint
-    if not os.path.exists("../checkpoints"):
-        os.makedirs("../checkpoints")
-    checkpoint_folder = os.path.join(
-        "../checkpoints", f"{args.model}{f'-{args.type}' if args.type else ''}"
-    )
-    if not os.path.exists(checkpoint_folder):
-        os.makedirs(checkpoint_folder)
-    checkpoint_name = default_checkpoint(args)
-
     logger.info(f"Calling model to initialize layers...")
-    if args.distribute:
+    if conf.get("distribute"):
         model.distributed_test_step(next(iter(test)))
     else:
         model.test_step(next(iter(test)))
 
-    if args.load:  # load saved weights if --load
-        checkpoint_name = (
-            find_last_checkpoint(dir=checkpoint_folder)
-            if args.load == "last"
-            else args.load
-        )
-        load_weights_path = os.path.join(
-            checkpoint_folder,
-            f"{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * (args.finetune and not args.from_pretrained)}.h5",
-        )
+    if run_manager.exist_weights():
+        model = run_manager.load_weights(model)
 
-        logger.info(f"Trying to load weights from {load_weights_path}...")
-        try:
-            with dist_strategy.scope():  # not sure if the scope is needed
-                model.load_weights(
-                    load_weights_path,
-                    skip_mismatch=False,  # let's try false, it was true
-                    by_name=True,
-                )
-            logger.info(f"Model weights loaded from {load_weights_path}.")
-        except Exception as e:
-            logger.error(
-                f"{Fore.YELLOW}Exception when trying to load checkpoint {load_weights_path}:\n{Style.DIM}{e}"
-                + f"\n{Style.NORMAL}Continuing without loading checkpoint.{Style.RESET_ALL}"
-            )
-            checkpoint_name = default_checkpoint(args)
+    # TODO demo should be refactored out or cleaned. it's too much in the way now
+    if conf.get("demo"):
+        conf["eager"] = True
+        conf["tensorboard"] = True
+        conf["gpu"] = None
+        conf["distribute"] = False
+        conf["bs"] = 1
 
-    if args.demo:
         logger.info(
             f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
-        seq_idx = args.test_seq or np.random.randint(0, 1000)
+        seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
         seqs = (
-            train.unbatch().shuffle(seq_idx).take(5).as_numpy_iterator()
-        )  # it was skip(seq_idx) instead of shuffle(seq_idx)
+            test.unbatch()
+            .skip(seq_idx)
+            .shuffle(1000)
+            .take(5)
+            .as_numpy_iterator()
+        )
         seqs = np.array([s for s in seqs], dtype=object)
         for s in range(len(seqs)):
             seq = seqs[s : s + 1]
@@ -615,20 +458,20 @@ def main():
             mask[0, 0, -1] = 1
             # mask[0, 1, -1] = 1
             # mask[0, 2, -1] = 1
-            masked_seq = np.where(mask, np.full_like(seq, "<MASK>", dtype=str), seq)
+            masked_seq = np.where(
+                mask, np.full_like(seq, b"<MASK>", dtype=object), seq
+            )
 
             pred, loss, kwout = model._predict(seq, mask)
-            print(f"Seq index: {seq_idx}")
+            print(f"Seq index: {seq_idx + s}")
 
-            if args.finetune:
+            if conf.get("finetune"):
                 pred = np.array(pred).flatten()
                 for p, _ in enumerate(pred):
                     domain = seq[0, p, 1]
-                    if type(domain) is bytes:
-                        domain = domain.decode("utf-8")
+
                     label = seq[0, p, 2]
-                    if type(label) is bytes:
-                        label = label.decode("utf-8")
+
                     print(
                         f"{Fore.CYAN if kwout.get('in_fold')[p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
                     )
@@ -637,23 +480,18 @@ def main():
                 pred = pred[0]
 
                 for i in range(len(pred)):
+                    # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
                     masked_host = model.inverse_hosts_lookup(
                         model.hosts_lookup(masked_seq[0, i, 0])
-                    )  # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
-                    if type(masked_host) is bytes:
-                        masked_host = masked_host.decode("utf-8")
+                    )
 
                     domain = model.inverse_domains_lookup(
                         model.domains_lookup(seq[0, i, 1])
                     )
-                    if type(domain) is bytes:
-                        domain = domain.decode("utf-8")
 
                     masked_domain = model.inverse_domains_lookup(
                         model.domains_lookup(masked_seq[0, i, 1])
                     )
-                    if type(masked_domain) is bytes:
-                        masked_domain = masked_domain.decode("utf-8")
 
                     predicted_token = model.inverse_domains_lookup(
                         np.array(pred).argmax(axis=-1)[i]
@@ -666,206 +504,153 @@ def main():
 
         sys.exit(0)
 
-    if args.verbose:
+    if conf.get("verbose"):
         logger.info(model.summary())
 
-    # Save model weights
-    save_weights_path = os.path.join(
-        checkpoint_folder,
-        f"{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * args.finetune}.h5",
-    )
-
     logger.info("Starting model training...")
-    if not args.distribute:
-        model.fit(
-            x=train,
-            y=None,
-            validation_data=test,
-            validation_freq=1,
-            batch_size=args.bs,
-            epochs=args.epochs,
-            callbacks=[
-                ModelCheckpoint(
-                    save_weights_path,
-                    monitor="loss",
-                    save_weights_only=True,
-                ),
-            ],
-        )
-    else:  # if args.distribute
-        num_batches = None
-        for epoch in range(args.epochs):
-            total_loss = 0.0
-            pbar = tqdm(train, total=num_batches)
 
-            # Train loop
-            current_batch = 0
-            for x in pbar:
-                total_loss += model.distributed_train_step(x)
-                current_batch += 1
-                pbar.set_description(
-                    f"[Epoch {epoch+1}/{args.epochs}] Train Loss: {total_loss / current_batch:.4f}"
-                )
+    # <------- EXPERIMENTAL: reuniting distributed and non-distributed training loops + externalizing saving
+    train_steps_per_epoch = None
+    test_steps_per_epoch = None
+    for epoch in range(conf.get("epochs")):
+        pbar = tqdm(train, total=train_steps_per_epoch)
 
-            # Test loop
-            for x in test:
-                total_loss += model.distributed_test_step(x)
-            logger.info(f"Test Loss: {total_loss / current_batch:.4f}")
+        # Training loop
+        step = 0
+        total_loss = 0.0
+        for x in pbar:
+            step += 1
+            total_loss += (
+                model.train_step(x)
+                if not conf.get("distribute")
+                else model.distributed_train_step(x)
+            )
+            pbar.set_description(
+                f"[Epoch {epoch+1}/{conf.get('epochs')}] Train Loss: {total_loss / step:.4f}"
+            )
+        train_steps_per_epoch = step
 
-            # Save model weights
-            with dist_strategy.scope():
-                model.save_weights(save_weights_path)
+        # save weights
+        run_manager.save_weights(model)
 
-            num_batches = current_batch
-
-    logger.info(f"Model training completed.")
-
-    with dist_strategy.scope():  # not sure if the scope is needed
-        model.save_weights(save_weights_path)
+        # Test loop
+        step = 0
+        total_loss = 0.0
+        pbar = tqdm(test, total=test_steps_per_epoch)
+        for x in pbar:
+            step += 1
+            total_loss += (
+                model.test_step(x)
+                if not conf.get("distribute")
+                else model.distributed_test_step(x)
+            )
+            pbar.set_description(
+                f"[Epoch {epoch+1}/{conf.get('epochs')}] Test Loss: {total_loss / step:.4f}"
+            )
+        test_steps_per_epoch = step
 
     # Save embeddings
-    logger.info("Saving embeddings...")
-    if not os.path.exists("../embeddings"):
-        os.makedirs("../embeddings")
-    embeddings_folder = os.path.join(
-        "../embeddings", f"{args.model}{f'-{args.type}' if args.type else ''}"
-    )
-    if not os.path.exists(embeddings_folder):
-        os.makedirs(embeddings_folder)
-    domain_embeddings = (
-        model.domain_embeddings.embeddings.numpy()
-    )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
-    np.save(
-        os.path.join(
-            embeddings_folder,
-            f"emb-{os.path.splitext(checkpoint_name)[0]}{f'.finetuned-{args.test_fold}' * args.finetune}.npy",
-        ),
-        domain_embeddings,
-    )
+    logger.info("Saving model embeddings...")
+    run_manager.save_embeddings(model)
+    # --------------------->
 
-    # Save predictions
-    logger.info("Saving model predictions...")
-    if not args.finetune:
-        raise ValueError(
-            f"{Fore.YELLOW}Saving model predictions can only be done in --finetune.{Style.RESET_ALL}"
-        )
-    elif args.distribute:
-        raise NotImplementedError(
-            f"{Fore.YELLOW}Saving model predictions is not supported in --distribute.{Style.RESET_ALL}"
-        )  # TODO implement saving model predictions in --distribute
+    # Model Evaluation TODO refactor out
+    if conf.get("evaluate"):
+        logger.info("Starting model evaluation...")
 
-    else:
-        # ISSUE should I evaluate on train, test or both? consider that in any case the model is never trained
-        # on in_fold domains, even on train. on the other hand, one may argue it's easier if the model has already
-        # seen that sequence. decide
-        # TODO make this algorithm more efficient, and possibly refactor it out
-        num_batches = sum([1 for _ in test])
-        d, trues, preds = (
-            np.zeros((num_batches * args.bs * args.seqlen), dtype=object),
-            np.zeros((num_batches * args.bs * args.seqlen)),
-            np.zeros((num_batches * args.bs * args.seqlen)),
-        )
-        batch_idx = 0
-        for x in tqdm(test):
-            domains = (
-                x[..., 1] if args.model == "DELM" else x[:, args.seqlen // 2, 0]
-            )  # (B,L) or (B,)
-            true = (
-                x[..., -1] if args.model == "DELM" else x[:, args.seqlen // 2, 1]
-            )  # (B,L) or (B,)
-            pred, _, kwout = model._predict(
-                x
-            )  # ( (B,L), (), (B,L) ) or ( (B,), (), (B,) )
-
-            domains_per_seq = (
-                args.seqlen
-                if args.model == "DELM"
-                else 1
-                if args.type == "CBOW"
-                else args.seqlen - 1
+        # TODO implement saving model predictions in distributed mode
+        if conf.get("distribute"):
+            raise NotImplementedError(
+                f"{Fore.YELLOW}Saving model predictions is not supported in --distribute.{Style.RESET_ALL}"
             )
-            d[
-                batch_idx
-                * args.bs
-                * domains_per_seq : batch_idx
-                * args.bs
-                * domains_per_seq
-                + len(domains[kwout["in_fold"]])
-            ] = domains[kwout["in_fold"]]
-            trues[
-                batch_idx
-                * args.bs
-                * domains_per_seq : batch_idx
-                * args.bs
-                * domains_per_seq
-                + len(true[kwout["in_fold"]])
-            ] = true[kwout["in_fold"]]
-            preds[
-                batch_idx
-                * args.bs
-                * domains_per_seq : batch_idx
-                * args.bs
-                * domains_per_seq
-                + len(pred[kwout["in_fold"]])
-            ] = pred[kwout["in_fold"]]
 
-            batch_idx += 1
+        # ISSUE Decide if I should evaluate on train, test or both. Consider that:
+        # (1) in any case the model is never trained on in_fold domains, even on train
+        # (2) it may be easier to predict on sequences that the model has already seen
+        # NOTE I'm evaluating on test
+
+        # <--- Saving Predictions
+        d, trues, preds = [], [], []
+        step = 0
+        for x in tqdm(test):
+            # DELM: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
+
+            # Compute predictions on x
+            domains_dim = 1 if conf.get("model") == "DELM" else 0
+            domains = x[..., domains_dim]
+            true = x[..., -1]
+            pred, _, in_fold_mask = model._predict(x)
+
+            # Only take predictions for domains that are in the test fold
+            # I want all these to be [B,]
+            domains = domains[in_fold_mask]
+            true = true[in_fold_mask]
+            pred = pred[in_fold_mask]
+
+            # Convert from tf.Tensors to lists
+            domains = domains.numpy()
+            domains = [domain.decode("utf-8") for domain in domains]
+            true = [int(y) for y in true]
+
+            # Append current predictions in a flattened way
+            d.extend(np.ravel(domains))
+            trues.extend(np.ravel(true))
+            preds.extend(np.ravel(pred))
+
+            step += 1
+
+        # Create predictions DataFrame
         df = pd.DataFrame({"domains": d, "true": trues, "pred": preds})
+        print(df)
 
-        df = df[df["domains"].notnull()]  # should be useless
-        df = df[df["domains"] != ""]  # should be useless
-        df = df[df["domains"] != 0]
-
-        predictions_path = f"../predictions/{args.model}/"
-        if args.type is not None:
-            predictions_path += f"{args.type}/"
-        if not os.path.exists(predictions_path):
-            os.makedirs(predictions_path)
-        df.to_csv(os.path.join(predictions_path, f"preds-fold{args.test_fold}.csv"))
-
-        # TODO I DON'T WANT TO COMPUTE METRICS HERE, IT SHOULD BE SEPARATE; HERE I ONLY SAVE PREDICTIONS
-
-        df["pred_hard"] = df["pred"].round()
-        # df["tp"] = np.logical_and(df["true"] == 1, df["pred_hard"] == 1)
-        # df["fp"] = np.logical_and(df["true"] == 0, df["pred_hard"] == 1)
-        # df["fn"] = np.logical_and(df["true"] == 1, df["pred_hard"] == 0)
-        # df["tn"] = np.logical_and(df["true"] == 0, df["pred_hard"] == 0)
-
-        # logger.info(
-        #     f"TP: {df['tp'].sum()}\nFP: {df['fp'].sum()}\nFN: {df['fn'].sum()}\nTN: {df['tn'].sum()}"
-        # )
-
-        logger.info(
-            f"SKlearn Confusion matrix:\n{sklearn.metrics.confusion_matrix(df['true'], df['pred_hard'], labels=[1,0])}"
+        # Save predictions DataFrame
+        run_manager.save_predictions(
+            df, conf.get("test_partition"), conf.get("test_fold")
         )
+        # --->
+
+        # <--- Compute metrics. TODO Refactor out and save them through RunManager
+
+        # Confusion matrix
+        logger.info(
+            f"SKlearn Confusion matrix:\n{sklearn.metrics.confusion_matrix(df['true'], df['pred'].round(), labels=[1,0])}"
+        )
+
+        for threshold in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+            preds_hard = (df["pred"] > threshold).astype(int)
+            logger.info(
+                f"Precision: {sklearn.metrics.precision_score(df['true'],preds_hard):.2f}"
+            )
+            logger.info(
+                f"Recall: {sklearn.metrics.recall_score(df['true'], preds_hard):.2f}"
+            )
+            logger.info(
+                f"F1 score: {sklearn.metrics.f1_score(df['true'], preds_hard):.2f}"
+            )
+            logger.info(
+                f"Accuracy: {sklearn.metrics.accuracy_score(df['true'], preds_hard):.2f}"
+            )
+
+        # AUC
         auc = sklearn.metrics.roc_auc_score(df["true"], df["pred"])
-        fpr, tpr, _ = sklearn.metrics.roc_curve(df["true"], df["pred"])
         logger.info(f"AUC: {auc}")
-        fig = plt.figure(figsize=(10, 10))
-        plt.plot(fpr, tpr, label=f"ROC fold {args.test_fold} (AUC = {auc:.2f})")
+
+        # Plot ROC
+        fpr, tpr, _ = sklearn.metrics.roc_curve(df["true"], df["pred"])
+        plt.figure(figsize=(10, 10))
+        plt.plot(
+            fpr,
+            tpr,
+            label=f"ROC fold {conf.get('test_fold')} (AUC = {auc:.2f})",
+        )
         plt.legend(loc="lower right")
         plt.savefig(
             os.path.join(
-                predictions_path,
-                f"roc-{args.model}{f'-{args.type}' if args.type else ''}{f'-{args.test_fold}'}.png",
+                run_manager.run_path,
+                f"""roc-{conf.get("model")}{f"-{conf.get('type')}" if conf.get('type') else ""}{f"-{conf.get('test_partition')}-{conf.get('test_fold')}"}.png""",
             )
         )
-        # logger.info(f"AUC: {sklearn.metrics.auc(fpr, tpr)}")
-        # display = sklearn.metrics.RocCurveDisplay.from_predictions(
-        #     df["true"], df["pred"]
-        # )
-        # print(thresholds)
-        # print(thresholds.shape)
-        # display.plot()
-        # plt.savefig("sklearnauc.png")
-        # plt.clf()
-
-        # fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(20, 10))
-        # ax1.plot(fpr)
-        # ax2.plot(tpr)
-        # fig.savefig("roc.png")
-
-    logger.info("Model predictions saved.")
+        # --->
 
 
 if __name__ == "__main__":

@@ -6,22 +6,26 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-import sklearn.metrics
-import matplotlib.pyplot as plt
+
+# import sklearn.metrics
+# import matplotlib.pyplot as plt
 from colorama import Fore, Style
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
-from models import DELM, Word2Vec
+
+from models import DELM, Word2Vec, ParallelW2V
 
 from utils.data_loader import (
+    # W2VStrategy,
     SequenceGenerator,
     FixedSequencingStrategy,
     ClusterSequencingStrategy,
-    W2VStrategy,
+    TimeWindowStrategy,
 )
-from utils.runs_management import RunManager
+from utils.evaluation import Evaluation
 from utils.distribute import DummyStrategy
+from utils.runs_management import RunManager
 
 
 def config_gpus(conf):
@@ -46,6 +50,10 @@ def get_logger(verbose=False):
     return logger
 
 
+def indent(depth=1):
+    return f"".join(["--" for i in range(depth - 1)]) + "> "
+
+
 def build_model(model, conf, dist_strategy):
     loss_reduction = (
         tf.keras.losses.Reduction.NONE if conf.get("distribute") else "auto"
@@ -63,6 +71,8 @@ def build_model(model, conf, dist_strategy):
             model = DELM(conf, dist_strategy)
         elif model.lower() == "w2v":
             model = Word2Vec(conf, dist_strategy)
+        elif model.lower() == "parallelw2v":
+            model = ParallelW2V(conf, dist_strategy)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
             loss=loss,
@@ -73,7 +83,6 @@ def build_model(model, conf, dist_strategy):
 
 
 # TODO Refactor out argument parsing
-# Also, I don't really need defaults now that I pull them from the default.yaml file
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("model", action="store", default="DELM")
@@ -81,6 +90,11 @@ def parse_args():
         "--es",
         action="store_true",
         help="Early Stopping",
+    )
+    argparser.add_argument(
+        "--start-from",
+        action="store",
+        help="Specify which run to use as a starting point for training.",
     )
     argparser.add_argument(
         "--load",
@@ -101,12 +115,8 @@ def parse_args():
         type=int,
         help="Number of training epochs",
     )
-    argparser.add_argument(
-        "--bs", action="store", default=512, type=int, help="Batch size"
-    )
-    argparser.add_argument(
-        "--lr", action="store", default=1e-4, type=float, help="Learning rate"
-    )
+    argparser.add_argument("--bs", action="store", type=int, help="Batch size")
+    argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
     argparser.add_argument(
         "--demo",
         action="store_true",
@@ -136,17 +146,6 @@ def parse_args():
         help="Whether to include <START> as the first token of each sequence (total length is unaffected)",
     )
     argparser.add_argument(
-        "--version",
-        action="store",
-        choices=[
-            "small",
-            "all",
-            "clean",
-        ],  # TODO clean should become the normal (and only) one
-        default="clean",
-        help="Deprecated. Version of the dataset used.",  # TODO deprecate
-    )
-    argparser.add_argument(
         "--tiny",
         action="store_true",
         help="Use for debugging purposes, to use a tiny portion of the dataset to get faster feedback.",
@@ -155,7 +154,7 @@ def parse_args():
         "--gpu",
         action="store",
         help="If it is an integer (eg. --gpu 3), run on a single specific GPU. "
-        + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "  # TODO
+        + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "
         + "If it is `all`, distribute on all GPUs.",
     )
     argparser.add_argument("--tensorboard", "--tb", action="store_true")
@@ -166,9 +165,7 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument(
-        "--group-by-host", action="store", default=True, type=bool
-    )
+    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
     argparser.add_argument(
         "--run-name",
         action="store",
@@ -176,7 +173,7 @@ def parse_args():
         help="Name used when saving to file. Has no effect if --load.",
     )
     argparser.add_argument("--omega", action="store", type=float)
-    argparser.add_argument("--shuffle", action="store_true")  # deprecated
+    argparser.add_argument("--shuffle", action="store_true")
     argparser.add_argument(
         "--type",
         action="store",
@@ -225,9 +222,10 @@ def parse_args():
     argparser.add_argument(
         "--seq-strategy",
         action="store",
-        choices=["cluster", "fixed"],
+        choices=["cluster", "fixed", "time"],
     )
     argparser.add_argument("--evaluate", action="store_true")
+    argparser.add_argument("--skip-predictions", action="store_true")
 
     args = argparser.parse_args()
 
@@ -239,49 +237,22 @@ def parse_args():
         pass
     try:
         if "[" in args.gpu:  # if it is a list
-            args.gpu = [
-                int(i) for i in args.gpu.strip("[").strip("]").split(",")
-            ]
+            args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
     except:  # it is not a list, let's try with a number
         pass
     if isinstance(args.gpu, list) or args.gpu == "all":
         args.distribute = True
-        assert tf.config.get_visible_devices(
-            "GPU"
-        ) == tf.config.list_physical_devices(
+        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
             "GPU"
         )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
     else:
         args.distribute = False
 
+    if args.evaluate:
+        args.finetune = True
+        args.epochs = 0
+
     return args
-
-
-def find_last_checkpoint(dir):
-    if len(os.listdir(dir)) > 0:
-        checkpoint = os.listdir(dir)[
-            [
-                os.path.getmtime(os.path.join(dir, f)) for f in os.listdir(dir)
-            ].index(
-                max(
-                    [
-                        os.path.getmtime(os.path.join(dir, f))
-                        for f in os.listdir(dir)
-                    ]
-                )
-            )
-        ]
-    else:
-        checkpoint = ""
-    return checkpoint
-
-
-def default_checkpoint(conf):
-    return f"{conf.get('run_name')}.h5"
-
-
-def indent(depth=1):
-    return f"".join(["--" for i in range(depth - 1)]) + "> "
 
 
 def main():
@@ -296,7 +267,8 @@ def main():
         model_object=None,
         model_name=f"{args.model}{f'-{args.type}' if args.type else ''}",
         run_name=args.run_name,
-        last=args.load == "last",
+        start_from=args.start_from,
+        # last=args.load == "last",
         verbose=True,
     )
 
@@ -304,9 +276,7 @@ def main():
     conf = run_manager.load_conf()
 
     superseding_args = {
-        k: v
-        for (k, v) in vars(args).items()
-        if conf.get(k) != v and v is not None
+        k: v for (k, v) in vars(args).items() if conf.get(k) != v and v is not None
     }
 
     conf = conf | superseding_args
@@ -325,8 +295,8 @@ def main():
         sequencing_strategy = FixedSequencingStrategy()
     elif conf.get("seq_strategy") == "cluster":
         sequencing_strategy = ClusterSequencingStrategy()
-    elif conf.get("model") == "W2V":
-        sequencing_strategy = W2VStrategy()
+    elif conf.get("seq_strategy") == "time":
+        sequencing_strategy = TimeWindowStrategy()
     else:
         raise ValueError()
 
@@ -343,11 +313,6 @@ def main():
         output_signature=tf.TensorSpec(
             shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
             dtype=tf.string,
-        )
-        if conf.get("model").lower() == "delm"
-        else tf.TensorSpec(
-            shape=[conf.get("seqlen"), 1 + conf.get("finetune")],
-            dtype=tf.string,
         ),
     )
     test = tf.data.Dataset.from_generator(
@@ -363,15 +328,8 @@ def main():
         output_signature=tf.TensorSpec(
             shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
             dtype=tf.string,
-        )
-        if conf.get("model").lower() == "delm"
-        else tf.TensorSpec(
-            shape=[conf.get("seqlen"), 1 + conf.get("finetune")],
-            dtype=tf.string,
         ),
     )
-    if not conf.get("demo") and conf.get("shuffle"):
-        train = train.shuffle(1000000)
     train = train.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
     test = test.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
 
@@ -420,8 +378,7 @@ def main():
     else:
         model.test_step(next(iter(test)))
 
-    if run_manager.exist_weights():
-        model = run_manager.load_weights(model)
+    model = run_manager.load_weights(model)
 
     # TODO demo should be refactored out or cleaned. it's too much in the way now
     if conf.get("demo"):
@@ -437,43 +394,42 @@ def main():
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
         seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
-        seqs = (
-            test.unbatch()
-            .skip(seq_idx)
-            .shuffle(1000)
-            .take(5)
-            .as_numpy_iterator()
-        )
+        seqs = test.unbatch().skip(seq_idx).shuffle(1000).take(5).as_numpy_iterator()
         seqs = np.array([s for s in seqs], dtype=object)
         for s in range(len(seqs)):
             seq = seqs[s : s + 1]
 
+            # <--- Modify seq here
+            print(np.shape(seq))
+            print(seq.shape)
+            if s == 4:
+                seq[0, :, 1] = "<PAD>"
+            seq[0, 0, 1] = "download.cdn.mozilla.net"
+
             mask = np.zeros_like(seq)
+            # <--- Modify mask here
             # place 1's where you want to replace tokens with <MASK>
             # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
             # example: mask[0, 1, 1]
             #   always zero ^  ^  ^
             #     second token |  |
             #                     | domain
-            mask[0, 0, -1] = 1
+            # mask[0, 0, -1] = 1
             # mask[0, 1, -1] = 1
             # mask[0, 2, -1] = 1
-            masked_seq = np.where(
-                mask, np.full_like(seq, b"<MASK>", dtype=object), seq
-            )
+            masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
 
-            pred, loss, kwout = model._predict(seq, mask)
+            pred, loss, in_fold_mask = model._predict(seq, mask)
             print(f"Seq index: {seq_idx + s}")
 
             if conf.get("finetune"):
                 pred = np.array(pred).flatten()
                 for p, _ in enumerate(pred):
                     domain = seq[0, p, 1]
-
                     label = seq[0, p, 2]
 
                     print(
-                        f"{Fore.CYAN if kwout.get('in_fold')[p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
+                        f"{Fore.CYAN if in_fold_mask[0,p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
                     )
                 print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
             else:
@@ -507,9 +463,8 @@ def main():
     if conf.get("verbose"):
         logger.info(model.summary())
 
+    # <------- Training loops (both distributed and non-distributed) + saving weights & embeddings
     logger.info("Starting model training...")
-
-    # <------- EXPERIMENTAL: reuniting distributed and non-distributed training loops + externalizing saving
     train_steps_per_epoch = None
     test_steps_per_epoch = None
     for epoch in range(conf.get("epochs")):
@@ -554,7 +509,7 @@ def main():
     run_manager.save_embeddings(model)
     # --------------------->
 
-    # Model Evaluation TODO refactor out
+    # Model Evaluation
     if conf.get("evaluate"):
         logger.info("Starting model evaluation...")
 
@@ -570,87 +525,66 @@ def main():
         # NOTE I'm evaluating on test
 
         # <--- Saving Predictions
-        d, trues, preds = [], [], []
-        step = 0
-        for x in tqdm(test):
-            # DELM: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
+        if not conf.get("skip_predictions"):
+            d, labels, preds = [], [], []
+            count_in_fold_predictions = 0
+            step = 0
+            pbar = tqdm(test)
+            for x in pbar:
+                # DELM: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
 
-            # Compute predictions on x
-            domains_dim = 1 if conf.get("model") == "DELM" else 0
-            domains = x[..., domains_dim]
-            true = x[..., -1]
-            pred, _, in_fold_mask = model._predict(x)
+                # Compute predictions on x
+                domains = x[..., 1]
+                label = x[..., -1]
+                pred, _, in_fold_mask = model._predict(x)
 
-            # Only take predictions for domains that are in the test fold
-            # I want all these to be [B,]
-            domains = domains[in_fold_mask]
-            true = true[in_fold_mask]
-            pred = pred[in_fold_mask]
+                # Only take predictions for domains that are in the test fold
+                domains = domains[in_fold_mask]
+                label = label[in_fold_mask]
+                pred = pred[in_fold_mask]
 
-            # Convert from tf.Tensors to lists
-            domains = domains.numpy()
-            domains = [domain.decode("utf-8") for domain in domains]
-            true = [int(y) for y in true]
+                current_in_fold_predictions = len(domains)
+                count_in_fold_predictions += current_in_fold_predictions
 
-            # Append current predictions in a flattened way
-            d.extend(np.ravel(domains))
-            trues.extend(np.ravel(true))
-            preds.extend(np.ravel(pred))
+                # Convert from tf.Tensors to lists
+                domains = domains.numpy()
+                domains = [domain.decode("utf-8") for domain in domains]
+                label = [int(y) for y in label]
 
-            step += 1
+                # Append current predictions in a flattened way
+                d.extend(np.ravel(domains))
+                labels.extend(np.ravel(label))
+                preds.extend(np.ravel(pred))
 
-        # Create predictions DataFrame
-        df = pd.DataFrame({"domains": d, "true": trues, "pred": preds})
-        print(df)
+                pbar.set_description(
+                    f"Step {step} completed: {count_in_fold_predictions} (+{current_in_fold_predictions})"
+                )
+                step += 1
 
-        # Save predictions DataFrame
-        run_manager.save_predictions(
-            df, conf.get("test_partition"), conf.get("test_fold")
+            # Create predictions DataFrame
+            df = pd.DataFrame({"domains": d, "labels": labels, "preds": preds})
+            print(df)
+
+            # Save predictions DataFrame
+            run_manager.save_predictions(
+                df, conf.get("test_partition"), conf.get("test_fold")
+            )
+            # --->
+
+        # Compute metrics and save
+        df = run_manager.load_predictions(
+            conf.get("test_partition"), conf.get("test_fold")
         )
-        # --->
-
-        # <--- Compute metrics. TODO Refactor out and save them through RunManager
-
-        # Confusion matrix
-        logger.info(
-            f"SKlearn Confusion matrix:\n{sklearn.metrics.confusion_matrix(df['true'], df['pred'].round(), labels=[1,0])}"
-        )
-
-        for threshold in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
-            preds_hard = (df["pred"] > threshold).astype(int)
-            logger.info(
-                f"Precision: {sklearn.metrics.precision_score(df['true'],preds_hard):.2f}"
-            )
-            logger.info(
-                f"Recall: {sklearn.metrics.recall_score(df['true'], preds_hard):.2f}"
-            )
-            logger.info(
-                f"F1 score: {sklearn.metrics.f1_score(df['true'], preds_hard):.2f}"
-            )
-            logger.info(
-                f"Accuracy: {sklearn.metrics.accuracy_score(df['true'], preds_hard):.2f}"
-            )
-
-        # AUC
-        auc = sklearn.metrics.roc_auc_score(df["true"], df["pred"])
-        logger.info(f"AUC: {auc}")
-
-        # Plot ROC
-        fpr, tpr, _ = sklearn.metrics.roc_curve(df["true"], df["pred"])
-        plt.figure(figsize=(10, 10))
-        plt.plot(
-            fpr,
-            tpr,
-            label=f"ROC fold {conf.get('test_fold')} (AUC = {auc:.2f})",
-        )
-        plt.legend(loc="lower right")
-        plt.savefig(
-            os.path.join(
+        evaluation = Evaluation(run_manager.run_path)
+        evaluation.compute_metrics(
+            df,
+            plot_save_path=os.path.join(
                 run_manager.run_path,
                 f"""roc-{conf.get("model")}{f"-{conf.get('type')}" if conf.get('type') else ""}{f"-{conf.get('test_partition')}-{conf.get('test_fold')}"}.png""",
-            )
+            ),
+            verbose=True,
         )
-        # --->
+        evaluation.save_metrics()
 
 
 if __name__ == "__main__":

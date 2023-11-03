@@ -85,16 +85,11 @@ class SequenceGenerator:
         # For each query file
         for f in os.listdir(self.input_folder):
             # Ignore file if it's not a .npy
-            if (
-                os.path.splitext(os.path.join(self.input_folder, f))[-1]
-                != ".npy"
-            ):
+            if os.path.splitext(os.path.join(self.input_folder, f))[-1] != ".npy":
                 continue
 
             # Load queries from file
-            queries = np.load(
-                os.path.join(self.input_folder, f), allow_pickle=True
-            )
+            queries = np.load(os.path.join(self.input_folder, f), allow_pickle=True)
 
             # Pair up queries with domain class if necessary
             if self.include_class:
@@ -111,6 +106,9 @@ class SequenceGenerator:
 
             # Yield each sequence
             for seq in seqs:
+                # print(seq)
+                # print(seq.shape)
+                # print(seq.dtype)
                 yield seq
 
     @staticmethod
@@ -158,9 +156,7 @@ class SequenceGenerator:
 
         # add class to each query
         sorter = np.argsort(labels[:, 0])
-        idx = sorter[
-            np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)
-        ]
+        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
         classes = labels[idx, 1]
         queries = np.concatenate(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
@@ -217,9 +213,7 @@ class FixedSequencingStrategy:
         for i, _ in enumerate(seqs):
             if include_start:
                 seqs[i][0] = ["<START>", "<START>"]
-            seqs[i][include_start:] = queries[
-                i * stride : i * stride + actual_seqlen
-            ]
+            seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
 
         return np.array(seqs, dtype=str)
 
@@ -306,6 +300,95 @@ class ClusterSequencingStrategy:
 
         dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, 2], -1))
         return dbscan.labels_
+
+
+class TimeWindowStrategy:
+    """Sequences are created by shifting a time window of a certain duration
+    across the queries and returning the queries that appear inside the window.
+    The duration of the window is not completely fixed: it has a base duration,
+    but it can be modified according to certain constraints on a per-sequence
+    basis. In particular, the two main constraints are:
+    - minimum inter-sequence distance (delta_min): if the last query of a
+    sequence and the query after that would have a gap below a certain
+    threshold, the second query is merged in the sequence,
+    - maximum intra-sequence distance (delta_max): if a query in a sequence and
+    another query in the same sequence would have a gap above a certain
+    threshold, the second query is split into a new sequence.
+    """
+
+    def make_sequences(
+        self,
+        queries: np.ndarray,
+        seqlen: int,
+        include_class: bool,
+        group_by_host: bool,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        verbose = kwargs.get("verbose", False)
+
+        # queries: [n_queries_in_file, 3] (host, domain, timestamp)
+
+        # sort queries by host, and within each host by timestamp
+        if group_by_host:
+            queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
+
+        base_duration = kwargs.get("base_duration", 8.0)
+        delta_min = kwargs.get("delta_min", 3.0)
+        delta_max = kwargs.get("delta_max", 4.0)
+
+        seqs = []
+
+        for host in np.unique(queries[:, 0]):
+            host_queries = queries[np.where(queries[:, 0] == host)]
+            start_ts = host_queries[0, 2]
+            last_ts = host_queries[0, 2]
+            current_seq = []
+            for query in host_queries:
+                if query.shape[0] == 4:  # if it includes class
+                    (host, domain, timestamp, c) = query
+                else:
+                    (host, domain, timestamp) = query
+                if verbose:
+                    print(
+                        f"Reading new query ({host} {domain} {timestamp}); start_ts: {start_ts}, last_ts: {last_ts}"
+                    )
+                exceeds_base_duration = timestamp - start_ts > base_duration
+                exceeds_intradistance = timestamp - last_ts > delta_max
+                exceeds_interdistance = timestamp - last_ts > delta_min
+                isfull = len(current_seq) >= seqlen
+
+                if (
+                    exceeds_intradistance
+                    or (exceeds_base_duration and exceeds_interdistance)
+                    or isfull
+                ):
+                    current_seq = pad(current_seq, seqlen)
+                    if verbose:
+                        print(
+                            f"End of sequence ({'too thin' if exceeds_intradistance else 'too long' if (exceeds_base_duration and exceeds_interdistance) else 'full'})"
+                        )
+                        print(current_seq)
+                    seqs.append(current_seq)
+                    current_seq = []
+                    start_ts = timestamp
+
+                # only works for TrivialTokenizer
+                if query.shape[0] == 4:  # if it includes class
+                    current_seq.append([host, domain[0], timestamp, c])
+                else:
+                    current_seq.append([host, domain[0], timestamp])
+
+                if verbose:
+                    print(f"Appending query ({host} {domain} {timestamp})")
+
+                last_ts = timestamp
+
+        seqs = np.array(seqs, dtype=str)
+
+        # remove timestamp
+        seqs = np.delete(seqs, 2, axis=-1)
+
+        return seqs
 
 
 class W2VStrategy:

@@ -5,15 +5,19 @@ import sys
 import os
 
 
-small_domains_path = "../../data/vocabs/small/domains_vocab.txt"
-all_domains_path = "../../data/vocabs/all/domains_vocab.txt"
+# small_domains_path = "../../data/vocabs/small/domains_vocab.txt"
+# all_domains_path = "../../data/vocabs/all/domains_vocab.txt"
+domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
 blacklist_paths = "../../blacklists"
 
-with open(small_domains_path, "r") as f:
-    small_domains = f.read().split("\n")
+# with open(small_domains_path, "r") as f:
+#     small_domains = f.read().split("\n")
 
-with open(all_domains_path, "r") as f:
-    all_domains = f.read().split("\n")
+# with open(all_domains_path, "r") as f:
+#     all_domains = f.read().split("\n")
+
+with open(domains_path, "r") as f:
+    domains = f.read().split("\n")
 
 print("Loading blacklist data...")
 blacklists = {}
@@ -29,21 +33,33 @@ with open(
     os.path.join(blacklist_paths, "malicious", "good", "blacklist.txt"), "r"
 ) as f:
     blacklists["malicious_good"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "malicious", "ok", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "malicious", "ok", "blacklist.txt"), "r"
+) as f:
     blacklists["malicious_ok"] = f.read().split("\n")
 with open(
     os.path.join(blacklist_paths, "suspicious", "good", "blacklist.txt"), "r"
 ) as f:
     blacklists["suspicious_good"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "suspicious", "ok", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "suspicious", "ok", "blacklist.txt"), "r"
+) as f:
     blacklists["suspicious_ok"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "tracking", "good", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "tracking", "good", "blacklist.txt"), "r"
+) as f:
     blacklists["tracking_good"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "tracking", "ok", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "tracking", "ok", "blacklist.txt"), "r"
+) as f:
     blacklists["tracking_ok"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "other", "good", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "other", "good", "blacklist.txt"), "r"
+) as f:
     blacklists["other_good"] = f.read().split("\n")
-with open(os.path.join(blacklist_paths, "other", "ok", "blacklist.txt"), "r") as f:
+with open(
+    os.path.join(blacklist_paths, "other", "ok", "blacklist.txt"), "r"
+) as f:
     blacklists["other_ok"] = f.read().split("\n")
 
 # Remove empty strings
@@ -83,7 +99,7 @@ df = pd.DataFrame(
         ]
     )
 )
-df.insert(0, "domain", all_domains)
+df.insert(0, "domain", domains)
 df = df.fillna(0)
 print(df.head(5))
 

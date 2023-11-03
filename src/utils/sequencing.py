@@ -44,6 +44,8 @@ def pad(sequence, to_len, token="<PAD>"):
     # If sequence has 3 columns (includes class), then the class for <PAD> is 0
     if np.shape(sequence)[1] == 3:
         sequence[-pad_width:] = [token, token, 0]
+    if np.shape(sequence)[1] == 4:
+        sequence[-pad_width:] = [token, token, token, 0]
 
     return sequence
 

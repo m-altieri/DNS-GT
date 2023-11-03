@@ -1,6 +1,7 @@
 *.pyc
 *.csv
 *.npy
+blacklists/
 data/arrays/*
 data/vocabs/*
 tensorboard/*

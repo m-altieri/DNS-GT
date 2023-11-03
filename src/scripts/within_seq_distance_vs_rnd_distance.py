@@ -1,9 +1,10 @@
+import sys
+
+sys.path.append("..")
 import numpy as np
 import tensorflow as tf
-import os
 import matplotlib.pyplot as plt
-
-n_seqs = 250
+from utils.data_loader import SequenceGenerator, ClusterSequencingStrategy
 
 
 def eucl_dist(a, b):
@@ -15,68 +16,25 @@ def cos_sim(a, b):
 
 
 # Load
-embeddings_path = "../embeddings/embeddings-increasingmasking.npy"
+embeddings_path = "../../runs/DELM/DELM-L32/embeddings.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "../preprocessing/vocabs/small/domains_vocab.txt"
+domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
 
 
-def seq_generator_from_folder(
-    input_folder, seqlen, stride=1, include_start=False, group_hosts=True
-):
-    """Folder containing .npy files, each representing a matrix of shape (n_queries, 2)."""
-    for f in os.listdir(input_folder):
-        seqs = create_sequences(
-            os.path.join(input_folder, f), seqlen, stride, include_start, group_hosts
-        )
-        for seq in seqs:
-            yield seq
-
-
-def create_sequences(
-    input_file, seqlen, stride=1, include_start=False, group_hosts=True
-):
-    # input [queries, 2]
-    # output [queries - stride, seqlen, 2]
-
-    actual_seqlen = seqlen - include_start
-
-    queries = np.load(input_file)
-    if group_hosts:
-        queries = queries[
-            np.argsort(queries[:, 0])
-        ]  # Sort queries by host, preserving row structure
-
-    seqs = np.empty(
-        shape=((len(queries) - actual_seqlen) // stride + 1, seqlen, 2), dtype=object
-    )
-
-    for i in range(len(seqs)):
-        if include_start:
-            seqs[i][0] = ["<START>", "<START>"]
-        seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
-
-    return seqs
-
-
-queries_path = f"../preprocessing/arrays/small/queries/"
-domains_vocab_path = f"../preprocessing/vocabs/small/domains_vocab.txt"
+queries_path = f"/mnt/storage15/TI-2016/npy/tokenized/trivial/train"
 train = tf.data.Dataset.from_generator(
-    lambda: seq_generator_from_folder(
-        os.path.join(queries_path, "train"),
-        stride=1,
-        seqlen=32,
-        include_start=False,
-        group_hosts=True,
+    SequenceGenerator(
+        queries_path, ClusterSequencingStrategy(), 32, False, True
     ),
     output_signature=tf.TensorSpec(shape=(32, 2), dtype=tf.string),
 )
-
 train = train.batch(256).prefetch(tf.data.AUTOTUNE)
-with open(domains_vocab_path, "r") as f:
-    domains_vocab = [l.strip() for l in f.readlines()]
+
+n_seqs = 200
+unique = False
 
 # Real sequences
 seqs = (
@@ -94,6 +52,14 @@ avg_dists_random = np.zeros(len(random_seqs))
 # Avg distance for real seqs
 for s, seq in enumerate(seqs):
     dist = 0.0
+
+    # Remove [UNK] tokens because they have no associated embedding
+    seq = [d for d in seq if d != "[UNK]" and d != "<UNK>"]
+
+    # If unique, remove duplicated domains. If there are duplicated domains, it's obviously easier to have a lower average distance
+    if unique:
+        seq = list(set(seq))
+
     seq_embeddings = embeddings[[np.where(domains == s)[0][0] for s in seq]]
     for _, emb_i in enumerate(seq_embeddings):
         for _, emb_j in enumerate(seq_embeddings):
@@ -113,6 +79,10 @@ for s, seq in enumerate(random_seqs):
     print(f"Seq {s}: {avg_dists_random[s]}")
 print(f"Avg: {np.mean(avg_dists_random)}")
 
+if True:
+    avg_dists_real = np.sort(avg_dists_real)
+    avg_dists_random = np.sort(avg_dists_random)
+
 # Plot
 fig = plt.figure(
     figsize=(
@@ -126,8 +96,6 @@ plt.plot(avg_dists_random, label="Random sequences")
 plt.xlabel("Sequences")
 plt.ylabel("Euclidean distance")
 plt.subplots_adjust(bottom=0.2, left=0.2)
-plt.legend()
-# plt.xticks([])
-# plt.yticks([0.95, 1.00, 1.05, 1.10])
+plt.legend(loc="lower right", fontsize="small")
 
-plt.savefig("avg_dists.png")
+plt.savefig("../../runs/_extras/DELM/avg_dists.png")

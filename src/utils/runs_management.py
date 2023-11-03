@@ -1,6 +1,7 @@
 import os
 import yaml
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from typing import Dict, Any
 from colorama import Fore, Style
@@ -51,20 +52,29 @@ class RunManager:
     _DEFAULT_CONF_FILE_NAME = "default.yaml"
 
     # These fields will not be saved
-    _CONF_WHITELIST = {"demo", "eager", "finetune", "from_pretrained"}
+    _CONF_WHITELIST = {
+        "demo",
+        "eager",
+        "finetune",
+        "from_pretrained",
+        "start_from",
+        "skip_predictions",
+    }
 
     def __init__(
         self,
         model_object: tf.keras.Model,
         model_name: str,
         run_name: str = None,
-        last: bool = False,
+        start_from: str = None,
+        last: bool = False,  # deprecated
         verbose: bool = False,
     ):
         # Initialize parameters
         self.model_object = model_object
         self.model_name = model_name
         self.run_name = run_name
+        self.start_from = start_from
         self.last = last
         self.verbose = verbose
 
@@ -118,10 +128,11 @@ class RunManager:
                 + f"model weights to {self.weights_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Model weights successfully saved to {self.weights_path}.{Fore.RESET}"
-            )
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Model weights successfully saved to {self.weights_path}.{Fore.RESET}"
+                )
 
     def save_embeddings(self, model_object: tf.keras.Model = None) -> None:
 
@@ -137,10 +148,11 @@ class RunManager:
                 + f"model embeddings to {self.weights_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Model embeddings successfully saved to {self.embeddings_path}.{Fore.RESET}"
-            )
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Model embeddings successfully saved to {self.embeddings_path}.{Fore.RESET}"
+                )
 
     def save_conf(self, model_object: tf.keras.Model = None) -> None:
 
@@ -150,7 +162,8 @@ class RunManager:
 
         # Remove whitelisted fields from dict (they won't be saved)
         for field in self._CONF_WHITELIST:
-            conf_to_save.pop(field)
+            if field in conf_to_save:
+                conf_to_save.pop(field)
 
         try:
             with open(self.conf_path, "w") as f:
@@ -163,10 +176,11 @@ class RunManager:
                 + f"the conf file to {self.weights_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Configuration file successfully saved to {self.conf_path}.{Fore.RESET}"
-            )
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Configuration file successfully saved to {self.conf_path}.{Fore.RESET}"
+                )
 
     def save_predictions(self, predictions, test_partition, test_fold):
 
@@ -186,33 +200,48 @@ class RunManager:
                 + f"predictions to {save_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Predictions successfully saved to {save_path}.{Fore.RESET}"
-            )
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Predictions successfully saved to {save_path}.{Fore.RESET}"
+                )
 
-    def load_weights(self, model_object: tf.keras.Model = None):
+    def load_weights(
+        self, model_object: tf.keras.Model = None, override_run_name: str = None
+    ):
         if model_object is None:
             model_object = self.model_object
 
+        # if no weights have been saved yet, load from self.start_from
+        weights_path = None
+        if not self.exist_weights():
+            _, start_from_weights_path, _, _, _ = self._get_paths(
+                self.model_name, self.start_from
+            )
+            weights_path = start_from_weights_path
+        else:
+            weights_path = self.weights_path
+
         # try to load weights into the model
         try:
-            model_object.load_weights(self.weights_path)
+            model_object.load_weights(weights_path)
         except Exception as e:
             print(
                 f"{Fore.RED}The following error occurred while loading "
-                + f"model weights from {self.weights_path}: \n{e}{Fore.RESET}"
+                + f"model weights from {weights_path}: \n{e}{Fore.RESET}"
             )
-            raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Model weights successfully loaded from {self.weights_path}.{Fore.RESET}"
-            )
+            # raise Exception(e)
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Model weights successfully loaded from {weights_path}.{Fore.RESET}"
+                )
         return model_object
 
     def load_embeddings(self):
         # try to load embeddings as numpy array
         embeddings = None
+
         try:
             embeddings = np.load(self.embeddings_path)
         except Exception as e:
@@ -221,10 +250,11 @@ class RunManager:
                 + f"model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
-        if self.verbose:
-            print(
-                f"{Fore.GREEN}[INFO] Model embeddings successfully loaded from {self.embeddings_path}.{Fore.RESET}"
-            )
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Model embeddings successfully loaded from {self.embeddings_path}.{Fore.RESET}"
+                )
         return embeddings
 
     def load_conf(self):
@@ -265,20 +295,53 @@ class RunManager:
                 + f"\nMake sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
             )
 
+        # if conf has not been saved yet, load it from start_from
+        conf_path = None
+        if not os.path.exists(self.conf_path):
+            _, _, _, start_from_conf_path, _ = self._get_paths(
+                self.model_name, self.start_from
+            )
+            conf_path = start_from_conf_path
+        else:
+            conf_path = self.conf_path
+
         # Load run-specific conf and override the default model one
         try:
-            with open(self.conf_path, "r") as f:
+            with open(conf_path, "r") as f:
                 conf = conf | yaml.safe_load(f)
             if self.verbose:
                 print(
-                    f"{Fore.GREEN}[INFO] Conf file successfully loaded from {self.conf_path}.{Fore.RESET}"
+                    f"{Fore.GREEN}[INFO] Conf file successfully loaded from {conf_path}.{Fore.RESET}"
                 )
         except:
             print(
-                f"{Fore.YELLOW}[INFO] Conf file not found for {self.run_name} in {self.conf_path}. Starting from scratch.{Fore.RESET}"
+                f"{Fore.YELLOW}[INFO] Conf file not found for {self.run_name} in {conf_path}. Starting from scratch.{Fore.RESET}"
             )
 
         return conf
+
+    def load_predictions(self, test_partition, test_fold):
+        # try to load predictions as a pandas DataFrame
+        predictions = None
+
+        predictions_path = os.path.join(
+            self.predictions_path,
+            f"predictions-partition{test_partition}-fold{test_fold}.csv",
+        )
+        try:
+            predictions = pd.read_csv(predictions_path)
+        except Exception as e:
+            print(
+                f"{Fore.RED}The following error occurred while loading "
+                + f"predictions from {predictions_path}: \n{e}{Fore.RESET}"
+            )
+            raise Exception(e)
+        else:
+            if self.verbose:
+                print(
+                    f"{Fore.GREEN}[INFO] Predictions successfully loaded from {predictions_path}.{Fore.RESET}"
+                )
+        return predictions
 
     def _get_paths(
         self,
@@ -307,28 +370,29 @@ class RunManager:
         if run_name is None:
             run_name = self.run_name
 
-        # if load_last, load the last run for the given model name
-        if self.last:
-            runs = os.listdir(
-                os.path.join(self._PROJECT_ROOT, "runs", model_name)
-            )
+        # Deprecating self.last
+        # # if load_last, load the last run for the given model name
+        # if self.last:
+        #     runs = os.listdir(
+        #         os.path.join(self._PROJECT_ROOT, "runs", model_name)
+        #     )
 
-            # if there are no runs for the given model name, raise an error
-            if len(runs) == 0:
-                raise FileNotFoundError(
-                    f"{Fore.RED}No run found for model {model_name}.{Fore.RESET}"
-                )
+        #     # if there are no runs for the given model name, raise an error
+        #     if len(runs) == 0:
+        #         raise FileNotFoundError(
+        #             f"{Fore.RED}No run found for model {model_name}.{Fore.RESET}"
+        #         )
 
-            # get "last modified time" for each run
-            lm_times = [
-                os.path.getmtime(
-                    os.path.join(self._PROJECT_ROOT, "runs", model_name, run)
-                )
-                for run in runs
-            ]
+        #     # get "last modified time" for each run
+        #     lm_times = [
+        #         os.path.getmtime(
+        #             os.path.join(self._PROJECT_ROOT, "runs", model_name, run)
+        #         )
+        #         for run in runs
+        #     ]
 
-            # set run_name equal to run having the highest "last modified" time
-            run_name = runs[lm_times.index(max(lm_times))]
+        #     # set run_name equal to run having the highest "last modified" time
+        #     run_name = runs[lm_times.index(max(lm_times))]
 
         # set weights, embeddings, conf and predictions paths
         run_path = os.path.join(

@@ -1,10 +1,13 @@
+import os
+
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 import numpy as np
-from sklearn.decomposition import PCA
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
-import sys
-import seaborn as sns
+from sklearn.decomposition import PCA
 
 
 def eucl_dist(a, b):
@@ -16,22 +19,12 @@ def cos_sim(a, b):
 
 
 # Load
-embeddings_path = "../embeddings/embeddings-increasingmasking.npy"
+embeddings_path = "../../runs/DELM/DELM-good/embeddings.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "../preprocessing/vocabs/small/domains_vocab.txt"
+domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
-
-# Boolean mask of domains to mark
-# marked_domains = np.isin(domains, [d for d in domains if d.endswith('google.com') or d.endswith('youtube.com') or d.endswith('facebook.com')])
-# Continuous value (# occurrences)
-# with open('domains_occurrences.txt', 'r') as f:
-#     occurrences = f.read()
-# marked_domains =
-# Save blobs of the final plot
-# np.savetxt('left_blob.txt', domains[np.unique(np.where(np.isin(embeddings, [e for e in embeddings if e[0] < 0.5 and e[1] > -1 and e[1] < 0.8]))[0])], fmt='%s')
-
 
 # Clustering
 clustering = False
@@ -45,7 +38,7 @@ if clustering:
     medoids_idx = np.zeros((k), dtype=int)
 
 # PCA
-if False:
+if True:
     embeddings = PCA(n_components=10).fit_transform(embeddings)
     print(embeddings)
     print(embeddings.shape)
@@ -54,7 +47,9 @@ if False:
 if False:
     stratified_samples_idx = np.zeros((k, samples_per_cluster), dtype=int)
     for c in range(k):
-        centroids[c] = np.mean(embeddings[np.where(cluster_mapping == c)[0]], axis=0)
+        centroids[c] = np.mean(
+            embeddings[np.where(cluster_mapping == c)[0]], axis=0
+        )
         medoids_idx[c] = np.array(
             [eucl_dist(e, centroids[c]) for e in embeddings]
         ).argmin()  # Most similar embedding to centroid c
@@ -64,7 +59,9 @@ if False:
             )
         try:
             stratified_samples_idx[c] = np.random.choice(
-                np.where(cluster_mapping == c)[0], samples_per_cluster, replace=False
+                np.where(cluster_mapping == c)[0],
+                samples_per_cluster,
+                replace=False,
             )
         except ValueError:
             print(
@@ -73,7 +70,9 @@ if False:
                 + f"{c} will be sampled multiple times."
             )
             stratified_samples_idx[c] = np.random.choice(
-                np.where(cluster_mapping == c)[0], samples_per_cluster, replace=True
+                np.where(cluster_mapping == c)[0],
+                samples_per_cluster,
+                replace=True,
             )
     stratified_samples_idx = stratified_samples_idx.flatten()
 
@@ -109,9 +108,9 @@ if False:
     top_nn = 10
     distances = np.zeros((20, 20))
     for i, mal_index in enumerate(malicious_idx):
-        mal_nn = np.argsort([eucl_dist(embeddings[mal_index], e) for e in embeddings])[
-            :top_nn
-        ]
+        mal_nn = np.argsort(
+            [eucl_dist(embeddings[mal_index], e) for e in embeddings]
+        )[:top_nn]
         # for j, med_index in enumerate(medoids_idx):
         for j, med_index in enumerate(np.where(domains == "www.google.com")[0]):
             gen_nn = np.argsort(
@@ -123,7 +122,8 @@ if False:
                 for l in range(len(mal_and_gen_nn)):
                     distances[k, l] = (
                         eucl_dist(
-                            embeddings[mal_and_gen_nn[k]], embeddings[mal_and_gen_nn[l]]
+                            embeddings[mal_and_gen_nn[k]],
+                            embeddings[mal_and_gen_nn[l]],
                         )
                         ** 2
                     )
@@ -131,22 +131,53 @@ if False:
             plt.cla()
             sns.heatmap(distances)
             plt.savefig(f"heatmaps/heatmap-{i}-{j}.png")
-            print(f"Saved heatmap for {domains[mal_index]} and {domains[med_index]}")
+            print(
+                f"Saved heatmap for {domains[mal_index]} and {domains[med_index]}"
+            )
 
 # sys.exit(0)
 
 # TSNE
 # Grid
-perps = [30.0]
-n_iters = 5
-increment = 250
+perps = [3.0, 5.0, 7.5, 10.0, 12.5, 15.0, 20.0]
+n_iters = 10
+base_iters = 250
+increment = 50
+
+
+N = 20
+malicious_domains = []
+common_domains = []
+
+labels = pd.read_csv("labels.csv")
+all_malicious = labels[labels["any"] == 1]["domain"].to_list()
+print(all_malicious)
+
+# Take the N most frequent malicious domain (according to (any, good))
+for d in domains:
+    if d in all_malicious:
+        malicious_domains.append(d)
+    if len(malicious_domains) == N:
+        break
+print(malicious_domains)
+
+# Take the N most common domains
+for d in domains:
+    if d not in all_malicious:
+        common_domains.append(d)
+    if len(common_domains) == N:
+        break
+print(common_domains)
 
 for perp in perps:
-    tsne = embeddings.copy()
+    # tsne = embeddings.copy()
     for n_iter in range(n_iters):
         tsne = TSNE(
-            n_components=2, perplexity=perp, n_iter=increment, verbose=True
-        ).fit_transform(tsne)
+            n_components=2,
+            perplexity=perp,
+            n_iter=base_iters + n_iter * increment,
+            verbose=True,
+        ).fit_transform(embeddings.copy())
 
         plt.figure(figsize=(40, 40))
         plt.scatter(
@@ -156,29 +187,34 @@ for perp in perps:
             marker=",",
         )
 
-        mark_malicious = False
-        mark_common = False
+        mark_malicious = True
+        mark_common = True
         if mark_malicious:
-            malicious_domains = [
-                "bootstraplugin.com",
-                "buzzonclick.com",
-                "jump.ogtrk.net",
-                "mgid.com",
-                "reimageplus.com",
-                "www.buzzonclick.com",
-                "www.mgid.com",
-                "www.reimageplus.com",
-                "www.videodownloadconverter.com",
-                "bestadbid.com",
-                "parkingcrew.net",
-                "download.televisionfanatic.com",
-                "mackeeperapp.mackeeper.com",
-                "yotefiles.com",
-                "bigbangads.go2cloud.org",
-                "hp.myway.com",
-                "play.leadzu.com",
+            # malicious_domains = [
+            #     "googleads.g.doubleclick.net",
+            #     "cm.g.doubleclick.net",
+            #     "ad.doubleclick.net",
+            #     "ads.mopub.com",
+            #     "track.appsflyer.com",
+            #     "v10.vortex-win.data.microsoft.com",
+            #     "t.appsflyer.com",
+            #     "ssdk.adkmob.com",
+            #     "rtd.tubemogul.com",
+            #     "m.addthis.com",
+            #     "idsync.rlcdn.com",
+            #     "bid.g.doubleclick.net",
+            #     "tags.bluekai.com",
+            #     "ads.flurry.com",
+            #     "log.dmtry.com",
+            #     "dpm.demdex.net",
+            #     "p.rfihub.com",
+            #     "sync.adaptv.advertising.com",
+            #     "pasta.esfile.duapps.com",
+            #     "dts.ushareit.com",
+            # ]
+            malicious_tsne = tsne[
+                np.where(np.isin(domains, malicious_domains))[0]
             ]
-            malicious_tsne = tsne[np.where(np.isin(domains, malicious_domains))[0]]
             plt.scatter(
                 malicious_tsne[:, 0],
                 malicious_tsne[:, 1],
@@ -194,26 +230,34 @@ for perp in perps:
                     marker=f"${i}$",
                 )
         if mark_common:
-            common_domains = [
-                "international-gfe.download.nvidia.com",
-                "edge-mqtt.facebook.com",
-                "graph.facebook.com",
-                "www.google.com",
-                "clients3.google.com",
-                "android.clients.google.com",
-                "mtalk.google.com",
-                "officecdn.microsoft.com",
-                "ads.adaptv.advertising.com",
-                "www.msftncsi.com",
-                "www.facebook.com",
-                "www.googleapis.com",
-                "international-gfe.download.nvidia.com.global.ogslb.com",
-                "clients4.google.com",
-                "googleads.g.doubleclick.net",
-                "www.google.co.in",
+            # common_domains = [
+            #     "edge-mqtt.facebook.com",
+            #     "graph.facebook.com",
+            #     "www.google.com",
+            #     "clients3.google.com",
+            #     "android.clients.google.com",
+            #     "www.google.co.in",
+            #     "www.facebook.com",
+            #     "mtalk.google.com",
+            #     "www.msftncsi.com",
+            #     "asia.api.targetingmantra.com",
+            #     "international-gfe.download.nvidia.com",
+            #     "clients4.google.com",
+            #     "mail.google.com",
+            #     "googleads.g.doubleclick.net",
+            #     "ssl.gstatic.com",
+            #     "www.googleapis.com",
+            #     "plus.google.com",
+            #     "graph.instagram.com",
+            #     "accounts.google.com",
+            #     "www.gstatic.com",
+            # ]
+            common_tsne = embeddings[
+                np.where(np.isin(domains, common_domains))[0]
             ]
-            common_tsne = embeddings[np.where(np.isin(domains, common_domains))[0]]
-            plt.scatter(common_tsne[:, 0], common_tsne[:, 1], c="#00aa55", s=2500)
+            plt.scatter(
+                common_tsne[:, 0], common_tsne[:, 1], c="#00aa55", s=2500
+            )
             for i, _ in enumerate(common_tsne):
                 plt.scatter(
                     common_tsne[i, 0],
@@ -223,4 +267,6 @@ for perp in perps:
                     marker=f"${i}$",
                 )
 
-        plt.savefig(f"tsne/tsne-p{perp}-i{(n_iter+1)*increment}.png")
+        plt.savefig(
+            f"../../runs/_extras/DELM/tsne/tsne-p{perp}-i{base_iters + n_iter * increment}.png"
+        )

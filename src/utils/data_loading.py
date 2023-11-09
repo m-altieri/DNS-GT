@@ -1,9 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-import numpy.typing as npt
 from abc import abstractmethod
-from utils.sequencing import pad
 from sklearn.cluster import DBSCAN
 from typing import Any, Iterator, Protocol
 
@@ -85,11 +83,16 @@ class SequenceGenerator:
         # For each query file
         for f in os.listdir(self.input_folder):
             # Ignore file if it's not a .npy
-            if os.path.splitext(os.path.join(self.input_folder, f))[-1] != ".npy":
+            if (
+                os.path.splitext(os.path.join(self.input_folder, f))[-1]
+                != ".npy"
+            ):
                 continue
 
             # Load queries from file
-            queries = np.load(os.path.join(self.input_folder, f), allow_pickle=True)
+            queries = np.load(
+                os.path.join(self.input_folder, f), allow_pickle=True
+            )
 
             # Pair up queries with domain class if necessary
             if self.include_class:
@@ -136,7 +139,7 @@ class SequenceGenerator:
         )
 
         # Only use labels for domains in embs (i.e. in the vocabulary)
-        # TODO this is only ok for TrivialTokenizer
+        # TODO this only works for TrivialTokenizer
         with open(
             "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt", "r"
         ) as f:
@@ -156,7 +159,9 @@ class SequenceGenerator:
 
         # add class to each query
         sorter = np.argsort(labels[:, 0])
-        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
+        idx = sorter[
+            np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)
+        ]
         classes = labels[idx, 1]
         queries = np.concatenate(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
@@ -165,8 +170,35 @@ class SequenceGenerator:
         return queries
 
 
+def pad(sequence, to_len, token="<PAD>"):
+    """Pad the input sequence with the specified token along axis 0 until it reaches a length of to_len.
+
+    Args:
+        sequence (array): the input sequence to pad. Must have shape (n_queries, 3) or (n_queries, 4).
+        to_len (int): the total length along axis 0 of the returned array.
+        token (str, optional): token to pad with. Defaults to "<PAD>". The last column is always padded with value 0.
+
+    Returns:
+        array: the padded sequence of length to_len.
+    """
+    pad_width = to_len - len(sequence)
+    sequence = np.pad(
+        sequence,
+        ((0, pad_width), (0, 0)),
+        constant_values=token,
+    )
+
+    # The class for the padding token is 0
+    if np.shape(sequence)[1] == 3:
+        sequence[-pad_width:] = [token, token, 0]
+    if np.shape(sequence)[1] == 4:
+        sequence[-pad_width:] = [token, token, token, 0]
+
+    return sequence
+
+
 class FixedSequencingStrategy:
-    """Sequences are cut exactly every `seqlen` queries, disregarding the timestamp.
+    """Sequences are cut exactly every `seqlen` queries, ignoring the timestamp.
     Each query in the dataset will appear in multiple sequences, depending on the stride value.
     """
 
@@ -191,8 +223,7 @@ class FixedSequencingStrategy:
             queries = np.delete(queries, 2, axis=1)
 
         # if the domain is a list (tokenized), take the first element
-        # TODO this is only ok for TrivialTokenizer
-        # queries = np.array([[q[0], q[1][0]] for q in queries])
+        # TODO this only works for TrivialTokenizer
         if queries.shape[-1] == 2:
             queries = np.array([[q[0], q[1][0]] for q in queries])
         else:  # if it includes the class
@@ -213,7 +244,9 @@ class FixedSequencingStrategy:
         for i, _ in enumerate(seqs):
             if include_start:
                 seqs[i][0] = ["<START>", "<START>"]
-            seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
+            seqs[i][include_start:] = queries[
+                i * stride : i * stride + actual_seqlen
+            ]
 
         return np.array(seqs, dtype=str)
 
@@ -254,7 +287,7 @@ class ClusterSequencingStrategy:
                 cluster = np.delete(cluster, 2, axis=1)
 
                 # take first element of the domain (the domain is a list with always one token)
-                # TODO this is only ok for the trivial tokenizer
+                # TODO this only works for the trivial tokenizer
                 if cluster.shape[-1] == 2:
                     cluster = np.array([[q[0], q[1][0]] for q in cluster])
                 else:  # if it includes the class
@@ -281,23 +314,13 @@ class ClusterSequencingStrategy:
 
         Args:
             queries (numpy array): A numpy 2D array containing timestamped items.
-            The timestamp is assumed to be in the last column.
+            The timestamp is assumed to be in the third column.
             eps (func): Used to change the method eps is calculated in DBSCAN
             (which determines the maximum distance for two points to be neighbors).
             By default it is the 50-percentile of the subsequent timestamp differences.
             The previous default was `lambda deltas: np.mean(deltas) + 3 * np.std(deltas)`.
         """
-        deltas = queries[1:, 2] - queries[:-1, 2]  # 2 is the timestamp column
-
-        try:
-            std_delta = np.std(deltas)
-        # TODO is this a legit use case? a host with a single query? is it supposed to happen?
-        except ZeroDivisionError as e:
-            print(
-                f"[WARN] Found a host with a single query: {queries}. Returning [-1]."
-            )
-            return [-1]
-
+        deltas = queries[1:, 2] - queries[:-1, 2]
         dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, 2], -1))
         return dbscan.labels_
 
@@ -391,44 +414,45 @@ class TimeWindowStrategy:
         return seqs
 
 
-class W2VStrategy:
-    def make_sequences(
-        self,
-        queries: np.ndarray,
-        seqlen: int,
-        include_class: bool,
-        group_by_host: bool,
-        **kwargs: Any,
-    ) -> np.ndarray:
-        # queries: [n_qry_in_file, 3] (host, domain, timestamp)
-        # Output: [n_seqs, seqlen, 1or2] (2 in finetuning): [..., context_-2, context_-1, target, context_+1, context_+2, ...]
-        assert seqlen % 2 == 1
+# Deprecated
+# class W2VStrategy:
+#     def make_sequences(
+#         self,
+#         queries: np.ndarray,
+#         seqlen: int,
+#         include_class: bool,
+#         group_by_host: bool,
+#         **kwargs: Any,
+#     ) -> np.ndarray:
+#         # queries: [n_qry_in_file, 3] (host, domain, timestamp)
+#         # Output: [n_seqs, seqlen, 1or2] (2 in finetuning): [..., context_-2, context_-1, target, context_+1, context_+2, ...]
+#         assert seqlen % 2 == 1
 
-        # sort queries by host, and within each host by timestamp
-        if group_by_host:
-            queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
+#         # sort queries by host, and within each host by timestamp
+#         if group_by_host:
+#             queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
 
-        # remove host and timestamp
-        queries = np.delete(queries, [0, 2], axis=1)
+#         # remove host and timestamp
+#         queries = np.delete(queries, [0, 2], axis=1)
 
-        # if the domain is a list (tokenized), take the first element
-        # TODO this is only ok for TrivialTokenizer
-        if queries.shape[-1] == 1:
-            queries = np.array([[q[0][0]] for q in queries])
-        else:  # if it includes the class
-            queries = np.array([[q[0][0], q[1]] for q in queries])
+#         # if the domain is a list (tokenized), take the first element
+#         # TODO this is only ok for TrivialTokenizer
+#         if queries.shape[-1] == 1:
+#             queries = np.array([[q[0][0]] for q in queries])
+#         else:  # if it includes the class
+#             queries = np.array([[q[0][0], q[1]] for q in queries])
 
-        radius = seqlen // 2
-        seqs = []
-        for index in range(0, len(queries), kwargs.get("stride", 1)):
-            left_overflow = max(radius - index, 0)
-            right_overflow = max(radius - (len(queries) - index - 1), 0)
-            seqs.append(
-                queries[
-                    max(0, index - radius - right_overflow) : min(
-                        index + radius + 1 + left_overflow, len(queries)
-                    )
-                ]
-            )
+#         radius = seqlen // 2
+#         seqs = []
+#         for index in range(0, len(queries), kwargs.get("stride", 1)):
+#             left_overflow = max(radius - index, 0)
+#             right_overflow = max(radius - (len(queries) - index - 1), 0)
+#             seqs.append(
+#                 queries[
+#                     max(0, index - radius - right_overflow) : min(
+#                         index + radius + 1 + left_overflow, len(queries)
+#                     )
+#                 ]
+#             )
 
-        return seqs
+#         return seqs

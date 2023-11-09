@@ -3,7 +3,6 @@ import yaml
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from typing import Dict, Any
 from colorama import Fore, Style
 
 
@@ -59,6 +58,7 @@ class RunManager:
         "from_pretrained",
         "start_from",
         "skip_predictions",
+        "gpu",
     }
 
     def __init__(
@@ -196,8 +196,7 @@ class RunManager:
             predictions.to_csv(save_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while saving "
-                + f"predictions to {save_path}: \n{e}{Fore.RESET}"
+                f"{Fore.RED}The following error occurred while saving predictions to {save_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
         else:
@@ -227,10 +226,8 @@ class RunManager:
             model_object.load_weights(weights_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while loading "
-                + f"model weights from {weights_path}: \n{e}{Fore.RESET}"
+                f"{Fore.RED}The following error occurred while loading model weights from {weights_path}: \n{e}{Fore.RESET}"
             )
-            # raise Exception(e)
         else:
             if self.verbose:
                 print(
@@ -246,8 +243,7 @@ class RunManager:
             embeddings = np.load(self.embeddings_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while loading "
-                + f"model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
+                f"{Fore.RED}The following error occurred while loading model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
         else:
@@ -272,8 +268,8 @@ class RunManager:
                 conf = conf | yaml.safe_load(f)
         except:
             print(
-                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_root_conf_path}."
-                + f"\nMake sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
+                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_root_conf_path}.\n"
+                + f"Make sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
             )
 
         # Load default model conf and override the root one
@@ -291,8 +287,8 @@ class RunManager:
                 conf = conf | yaml.safe_load(f)
         except:
             print(
-                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_model_conf_path}."
-                + f"\nMake sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
+                f"{Fore.YELLOW}[WARN] Could not load default conf file for {self.run_name} in {default_model_conf_path}.\n"
+                + f"Make sure that there exists a default.yaml file in the model runs folder.{Fore.RESET}"
             )
 
         # if conf has not been saved yet, load it from start_from
@@ -348,7 +344,6 @@ class RunManager:
         model_name: str = None,
         run_name: str = None,
         finetuning: bool = False,
-        **kwargs,
     ):
 
         # check for ValueErrors
@@ -369,30 +364,6 @@ class RunManager:
         # if model_name is None, use the one provided in the constructor
         if run_name is None:
             run_name = self.run_name
-
-        # Deprecating self.last
-        # # if load_last, load the last run for the given model name
-        # if self.last:
-        #     runs = os.listdir(
-        #         os.path.join(self._PROJECT_ROOT, "runs", model_name)
-        #     )
-
-        #     # if there are no runs for the given model name, raise an error
-        #     if len(runs) == 0:
-        #         raise FileNotFoundError(
-        #             f"{Fore.RED}No run found for model {model_name}.{Fore.RESET}"
-        #         )
-
-        #     # get "last modified time" for each run
-        #     lm_times = [
-        #         os.path.getmtime(
-        #             os.path.join(self._PROJECT_ROOT, "runs", model_name, run)
-        #         )
-        #         for run in runs
-        #     ]
-
-        #     # set run_name equal to run having the highest "last modified" time
-        #     run_name = runs[lm_times.index(max(lm_times))]
 
         # set weights, embeddings, conf and predictions paths
         run_path = os.path.join(

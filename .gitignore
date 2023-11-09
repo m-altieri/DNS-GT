@@ -1,6 +1,7 @@
 *.pyc
 *.csv
 *.npy
+*.png
 blacklists/
 data/arrays/*
 data/vocabs/*

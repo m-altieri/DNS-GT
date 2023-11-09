@@ -1,6 +1,4 @@
 import os
-import sys
-import logging
 import numpy as np
 import tensorflow as tf
 from datetime import datetime
@@ -12,7 +10,6 @@ from utils.distribute import DummyStrategy
 class ParallelW2V(tf.keras.Model):
     def pretrain(self):
         self.domain_embeddings.trainable = True
-        # self.hidden.trainable = True
         self.out.trainable = True
         self.classifier.trainable = False
         self.finetuning = False
@@ -20,7 +17,6 @@ class ParallelW2V(tf.keras.Model):
     def finetune(self):
         freeze = self.conf.get("freeze", False)
         self.domain_embeddings.trainable = not freeze
-        # self.hidden.trainable = not freeze
         self.out.trainable = not freeze
         self.classifier.trainable = True
         self.finetuning = True
@@ -72,11 +68,6 @@ class ParallelW2V(tf.keras.Model):
     def __init__(self, conf, dist_strategy):
         super().__init__()
 
-        # Logger
-        self._logger = logging.getLogger(__name__)
-        self._logger.setLevel(logging.INFO)
-        self._logger.addHandler(logging.StreamHandler(sys.stdout))
-
         # Configuration
         self.conf = conf
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
@@ -98,7 +89,7 @@ class ParallelW2V(tf.keras.Model):
         self.dist_strategy = dist_strategy
         self.distributed = self.dist_strategy is not DummyStrategy
         if self.distributed:
-            self._logger.info(
+            print(
                 f"Initializing model with distribution strategy: {self.dist_strategy}"
             )
 
@@ -135,7 +126,7 @@ class ParallelW2V(tf.keras.Model):
             ]
             # If I truncate, I have to add back the special ones that are now excluded
             self.domains_vocabulary.append("<PAD>")
-            self._logger.critical(
+            print(
                 f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
             )
         self.domains_vocabulary = tf.constant(self.domains_vocabulary)
@@ -155,7 +146,6 @@ class ParallelW2V(tf.keras.Model):
             output_dim=self.conf["dim"],
         )
 
-        # self.hidden = tf.keras.layers.Dense(self.conf["dim"], activation=None)
         self.out = FF(
             [self.conf["dim"], self.ndomains], [None, None]
         )  # tf.keras.layers.Dense(self.ndomains)
@@ -432,10 +422,6 @@ class ParallelW2V(tf.keras.Model):
                 domain_indexes = tf.boolean_mask(domain_indexes, nonpad_tokens)
                 pred = tf.boolean_mask(pred, nonpad_tokens)
 
-                # print(M.shape)
-                # print(tf.math.reduce_sum(M))
-                # print(domain_indexes.shape)
-                # print(pred.shape)
                 loss = self.compiled_loss(
                     domain_indexes, pred, regularization_losses=self.losses
                 )

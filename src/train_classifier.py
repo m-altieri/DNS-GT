@@ -25,7 +25,6 @@ from pyod.models.suod import SUOD
 from pyod.models.copod import COPOD
 
 from utils.evaluation import Evaluation
-from utils.runs_management import RunManager
 
 
 def parse_args():
@@ -61,8 +60,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Get embeddings
-    # Embeddings are input samples (they act as feature vectors)
+    # Load embeddings (they act as feature vectors)
     emb_path = os.path.join("../runs", args.model, args.run, "embeddings.npy")
     embs = np.load(emb_path)
 
@@ -70,8 +68,7 @@ def main():
     embs = embs[1:-1]
     print("Loaded embs with shape:", embs.shape)
 
-    # Get data
-    # Target is the label (1 for blacklisted, 0 for not-blacklisted)
+    # Load labels
     labels = pd.read_csv(
         os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
     )
@@ -92,40 +89,35 @@ def main():
             ("any", "ok"),
         ]
     )
-    # print(labels)
 
-    # Get vocabulary
+    # Load vocabulary
     vocab_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
-
     with open(vocab_path, "r") as f:
         vocab = [l.strip() for l in f.readlines()]
 
-    # if --max-tokens, truncate the vocab
+    # if --max-tokens, truncate the vocabulary
     if args.max_tokens:
         vocab = vocab[: args.max_tokens]
         print(f"Truncated vocab to first {args.max_tokens} tokens.")
+
+    # check that embeddings and vocabulary have the same length
     if len(embs) != len(vocab):
         raise AssertionError(
             f"Embeddings and vocabulary should have the same length, but have {len(embs)} and {len(vocab)}"
         )
-    print(len(embs))
-    print(len(vocab))
 
     # Only use labels for domains in embs (i.e. in the vocabulary)
     labels = labels[labels["domain"].isin(vocab)]
     labels = labels.reset_index()
-    print(labels)
 
     # Sort labels to match vocabs
     labels = labels.set_index("domain").reindex(vocab)
-    print(labels)
 
     # Set NaN values to 0 (non-malicious)
     labels = labels.fillna(0)
 
     # Select target category
     labels = labels[args.category, args.q]
-    print(labels)
 
     X = np.array(embs)
     y = np.array(labels)
@@ -143,34 +135,30 @@ def main():
         COPOD: {"conf": {"oneclass": True}, "kwargs": {"contamination": 0.2}},
         SUOD: {"conf": {"oneclass": True}, "kwargs": {"contamination": 0.2}},
     }
+    # for oneclass models, ineligible metrics will be ignored
     metrics = [
         "f1-weighted",
         "f1-macro",
         "f1-micro",
         "acc",
         "auc",
-    ]  # for oneclass models, ineligible metrics will be ignored
+    ]
     results = {Model.__name__: {} for Model in Models}
 
-    # Get indexes of domains in test fold
+    # Load test fold
     test_domains = np.load(
         "/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-0/fold-0.npy"
     )
-    test_indexes = np.sort(np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1])
+    test_indexes = np.sort(
+        np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1]
+    )
 
     train_X = np.delete(X, test_indexes, axis=0)
     train_y = np.delete(y, test_indexes, axis=0)
     test_X = X[test_indexes]
     test_y = y[test_indexes]
-    print("train_X:", len(train_X))
-    print("train_y:", len(train_y))
-    print("test_X:", len(test_X))
-    print("test_y:", len(test_y))
-    print(len(np.where(np.isnan(y))[0]))
-    print(len(np.where(y == 0)[0]))
-    print(len(np.where(y == 1)[0]))
 
-    # Adjust label ratio of the training samples according to --label-ratio
+    # If --balanced, adjust label ratio of the training samples
     if args.balanced:
         print("Balancing train...")
         balanced_idx = get_balanced_indices(train_y)
@@ -198,12 +186,16 @@ def main():
         )
 
         model.fit(
-            X=oneclass_train_X if Models[Model]["conf"].get("oneclass") else train_X,
+            X=oneclass_train_X
+            if Models[Model]["conf"].get("oneclass")
+            else train_X,
             y=None if Models[Model]["conf"].get("oneclass") else train_y,
         )
 
         # Predict and save preds
-        preds, probs = model.predict(test_X)  # it gives me the prob for the two classes
+        preds, probs = model.predict(
+            test_X
+        )  # it gives me the prob for the two classes
         probs = probs[:, 1]
 
         df = pd.DataFrame(
@@ -218,7 +210,9 @@ def main():
         if not os.path.exists(
             os.path.join(predictions_path, args.model, "predictions")
         ):
-            os.makedirs(os.path.join(predictions_path, args.model, "predictions"))
+            os.makedirs(
+                os.path.join(predictions_path, args.model, "predictions")
+            )
         df.to_csv(
             os.path.join(
                 predictions_path, args.model, "predictions", f"preds-fold0.csv"
@@ -257,11 +251,14 @@ def main():
 
 def get_balanced_indices(labels):
     if len(np.where(labels == 1)[0]) > len(np.where(labels == 0)[0]):
+        # TODO implement the case where there are more positive than negative samples
         raise NotImplementedError(
-            "For now, negative samples must be more than positive ones"  # TODO
+            "For now, negative samples must be more than positive ones"
         )
     pos_idx = np.where(labels == 1)[0]
-    neg_idx = np.random.choice(np.where(labels == 0)[0], len(pos_idx), replace=False)
+    neg_idx = np.random.choice(
+        np.where(labels == 0)[0], len(pos_idx), replace=False
+    )
     return np.sort(np.concatenate((neg_idx, pos_idx)))
 
 
@@ -280,13 +277,6 @@ class ModelWrapper:
     def predict(self, X):
         pred = self.model.predict(X)
         probs = self.model.predict_proba(X)
-        # if (
-        #     self.Model == OneClassSVM
-        #     or self.Model == IsolationForest
-        #     or self.Model == LocalOutlierFactor
-        # ):
-        #     pred = np.where(pred == 1, np.full_like(pred, 0), pred)
-        #     pred = np.where(pred == -1, np.full_like(pred, 1), pred)
         return pred, probs
 
     def evaluate(self, test_y, preds, probs, metrics):

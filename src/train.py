@@ -1,88 +1,29 @@
 import os
 import sys
 import time
-import logging
 import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
-# import sklearn.metrics
-# import matplotlib.pyplot as plt
 from colorama import Fore, Style
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
 
-from models import DELM, Word2Vec, ParallelW2V
+from models import DELM, ParallelW2V
 
-from utils.data_loader import (
-    # W2VStrategy,
+from utils.data_loading import (
     SequenceGenerator,
     FixedSequencingStrategy,
     ClusterSequencingStrategy,
     TimeWindowStrategy,
 )
+from utils.formatting import indent
 from utils.evaluation import Evaluation
 from utils.distribute import DummyStrategy
 from utils.runs_management import RunManager
 
 
-def config_gpus(conf):
-    if isinstance(conf.get("gpu"), int):
-        device = tf.config.list_physical_devices("GPU")[conf.get("gpu")]
-        tf.config.set_visible_devices(device, "GPU")
-        print(f"Set {device} as the only visible device.")
-    for device in tf.config.get_visible_devices("GPU"):
-        try:
-            tf.config.experimental.set_memory_growth(device, True)
-        except Exception as e:
-            print("Cannot enable memory growth on device:", device)
-            sys.exit(e)
-
-
-def get_logger(verbose=False):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    if verbose:
-        logger.setLevel(logging.DEBUG)
-    logger.addHandler(logging.StreamHandler(sys.stdout))
-    return logger
-
-
-def indent(depth=1):
-    return f"".join(["--" for i in range(depth - 1)]) + "> "
-
-
-def build_model(model, conf, dist_strategy):
-    loss_reduction = (
-        tf.keras.losses.Reduction.NONE if conf.get("distribute") else "auto"
-    )
-    if conf.get("finetune"):
-        loss = tf.keras.losses.BinaryCrossentropy(
-            from_logits=False, reduction=loss_reduction
-        )
-    else:
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=False, reduction=loss_reduction
-        )
-    with dist_strategy.scope():
-        if model.lower() == "delm":
-            model = DELM(conf, dist_strategy)
-        elif model.lower() == "w2v":
-            model = Word2Vec(conf, dist_strategy)
-        elif model.lower() == "parallelw2v":
-            model = ParallelW2V(conf, dist_strategy)
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
-            loss=loss,
-            metrics=[],
-            run_eagerly=conf.get("eager"),
-        )
-        return model
-
-
-# TODO Refactor out argument parsing
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("model", action="store", default="DELM")
@@ -116,7 +57,9 @@ def parse_args():
         help="Number of training epochs",
     )
     argparser.add_argument("--bs", action="store", type=int, help="Batch size")
-    argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
+    argparser.add_argument(
+        "--lr", action="store", type=float, help="Learning rate"
+    )
     argparser.add_argument(
         "--demo",
         action="store_true",
@@ -153,9 +96,14 @@ def parse_args():
     argparser.add_argument(
         "--gpu",
         action="store",
-        help="If it is an integer (eg. --gpu 3), run on a single specific GPU. "
-        + "If it is an array (eg. [2,4]), distribute the execution on the specified GPUs. "
-        + "If it is `all`, distribute on all GPUs.",
+        nargs="+",
+        type=int,
+        default=[0],
+        help="A list of GPU indexes (eg. --gpu 0 2 4). "
+        + "If it is a single integer (eg. --gpu 3), run on a single specific GPU. "
+        + "If it multiple integers (eg. --gpu 2 4), distribute the execution on the specified GPUs. "
+        + "If it is -1 or contains -1, distribute on all GPUs. All other values are invalid."
+        + "GPU indexes start from 0.",
     )
     argparser.add_argument("--tensorboard", "--tb", action="store_true")
     argparser.add_argument(
@@ -165,7 +113,9 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
+    argparser.add_argument(
+        "--group-by-host", action="store", default=True, type=bool
+    )
     argparser.add_argument(
         "--run-name",
         action="store",
@@ -231,23 +181,6 @@ def parse_args():
 
     assert args.test_seq is None or args.test_seq > 0
 
-    try:
-        args.gpu = int(args.gpu)
-    except:  # it is not a number, it's either None or `all`
-        pass
-    try:
-        if "[" in args.gpu:  # if it is a list
-            args.gpu = [int(i) for i in args.gpu.strip("[").strip("]").split(",")]
-    except:  # it is not a list, let's try with a number
-        pass
-    if isinstance(args.gpu, list) or args.gpu == "all":
-        args.distribute = True
-        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
-            "GPU"
-        )  # if distribute, devices cannot be set as not visible, to avoid possible bugs
-    else:
-        args.distribute = False
-
     if args.evaluate:
         args.finetune = True
         args.epochs = 0
@@ -255,12 +188,81 @@ def parse_args():
     return args
 
 
+def init_gpus(conf):
+    """Perform the necessary GPU-related initializations.
+
+    Args:
+        conf (dict): the current run configuration.
+    """
+
+    # Get total number of GPUs
+    n_gpus = len(tf.config.list_physical_devices())
+
+    # If gpu contains -1, use all GPUs instead
+    if -1 in conf.get("gpu"):
+        conf["gpu"] = list(range(n_gpus))
+
+    # If multiple gpus are specified, run in distributed mode
+    if len(conf.get("gpu")) > 1:
+        conf["distribute"] = True
+
+        # if distribute, all devices must be visible, to avoid possible bugs
+        assert tf.config.get_visible_devices(
+            "GPU"
+        ) == tf.config.list_physical_devices("GPU")
+
+    # Otherwise if gpu is a single number, don't run in distribute mode
+    else:
+        conf["distribute"] = False
+
+        # make only the current device visible to make sure others are not used
+        device = tf.config.list_physical_devices("GPU")[conf.get("gpu")[0]]
+        tf.config.set_visible_devices(device, "GPU")
+        if conf.get("verbose"):
+            print(f"[INFO] Set {device} as the only visible device.")
+
+    # Enable memory growth on all visible devices
+    for device in tf.config.get_visible_devices("GPU"):
+        try:
+            tf.config.experimental.set_memory_growth(device, True)
+        except Exception as e:
+            print(
+                f"{Fore.RED}[ERROR] Cannot enable memory growth on device: {device}{Fore.RESET}"
+            )
+            sys.exit(e)
+
+
+def build_model(model, conf, dist_strategy):
+    loss_reduction = (
+        tf.keras.losses.Reduction.NONE if conf.get("distribute") else "auto"
+    )
+    if conf.get("finetune"):
+        loss = tf.keras.losses.BinaryCrossentropy(
+            from_logits=False, reduction=loss_reduction
+        )
+    else:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=False, reduction=loss_reduction
+        )
+    with dist_strategy.scope():
+        if model.lower() == "delm":
+            model = DELM(conf, dist_strategy)
+        elif model.lower() == "parallelw2v":
+            model = ParallelW2V(conf, dist_strategy)
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
+            loss=loss,
+            metrics=[],
+            run_eagerly=conf.get("eager"),
+        )
+        return model
+
+
 def main():
     args = parse_args()
 
     # Initialize logger
-    logger = get_logger(args.verbose)
-    logger.info(f"Starting program with args: {vars(args)}\n")
+    print(f"Starting program with args: {vars(args)}\n")
 
     # Manage save folder
     run_manager = RunManager(
@@ -268,7 +270,6 @@ def main():
         model_name=f"{args.model}{f'-{args.type}' if args.type else ''}",
         run_name=args.run_name,
         start_from=args.start_from,
-        # last=args.load == "last",
         verbose=True,
     )
 
@@ -276,7 +277,9 @@ def main():
     conf = run_manager.load_conf()
 
     superseding_args = {
-        k: v for (k, v) in vars(args).items() if conf.get(k) != v and v is not None
+        k: v
+        for (k, v) in vars(args).items()
+        if conf.get(k) != v and v is not None
     }
 
     conf = conf | superseding_args
@@ -286,9 +289,9 @@ def main():
             for (k, v) in conf.items()
         ]
     )
-    logger.info(f"Configuration: \n{conf_log}")
+    print(f"Configuration: \n{conf_log}")
 
-    config_gpus(conf)
+    init_gpus(conf)
 
     sequencing_strategy = None
     if conf.get("seq_strategy") == "fixed":
@@ -342,7 +345,7 @@ def main():
             else None
         )  # initializing MirroredStrategy with None uses all gpus
         dist_strategy = tf.distribute.MirroredStrategy(gpus)
-        logger.warning(
+        print(
             f"{Fore.BLUE}Distributing on {dist_strategy.num_replicas_in_sync} devices.{Style.RESET_ALL}"
         )
 
@@ -372,7 +375,7 @@ def main():
     else:
         model.pretrain()
 
-    logger.info(f"Calling model to initialize layers...")
+    print(f"Calling model to initialize layers...")
     if conf.get("distribute"):
         model.distributed_test_step(next(iter(test)))
     else:
@@ -388,13 +391,19 @@ def main():
         conf["distribute"] = False
         conf["bs"] = 1
 
-        logger.info(
+        print(
             f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
             + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
             + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
         )
         seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
-        seqs = test.unbatch().skip(seq_idx).shuffle(1000).take(5).as_numpy_iterator()
+        seqs = (
+            test.unbatch()
+            .skip(seq_idx)
+            .shuffle(1000)
+            .take(5)
+            .as_numpy_iterator()
+        )
         seqs = np.array([s for s in seqs], dtype=object)
         for s in range(len(seqs)):
             seq = seqs[s : s + 1]
@@ -417,7 +426,9 @@ def main():
             # mask[0, 0, -1] = 1
             # mask[0, 1, -1] = 1
             # mask[0, 2, -1] = 1
-            masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
+            masked_seq = np.where(
+                mask, np.full_like(seq, b"<MASK>", dtype=object), seq
+            )
 
             pred, loss, in_fold_mask = model._predict(seq, mask)
             print(f"Seq index: {seq_idx + s}")
@@ -453,18 +464,18 @@ def main():
                         np.array(pred).argmax(axis=-1)[i]
                     )
                     domain_index = model.domains_lookup(domain)
-                    logger.info(
+                    print(
                         f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
                     )
-                logger.info(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
+                print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
 
         sys.exit(0)
 
     if conf.get("verbose"):
-        logger.info(model.summary())
+        print(model.summary())
 
-    # <------- Training loops (both distributed and non-distributed) + saving weights & embeddings
-    logger.info("Starting model training...")
+    # Model Training and Validation (for both distributed and non-distributed)
+    print("Starting model training...")
     train_steps_per_epoch = None
     test_steps_per_epoch = None
     for epoch in range(conf.get("epochs")):
@@ -485,7 +496,7 @@ def main():
             )
         train_steps_per_epoch = step
 
-        # save weights
+        # Save weights
         run_manager.save_weights(model)
 
         # Test loop
@@ -505,13 +516,12 @@ def main():
         test_steps_per_epoch = step
 
     # Save embeddings
-    logger.info("Saving model embeddings...")
+    print("Saving model embeddings...")
     run_manager.save_embeddings(model)
-    # --------------------->
 
     # Model Evaluation
     if conf.get("evaluate"):
-        logger.info("Starting model evaluation...")
+        print("Starting model evaluation...")
 
         # TODO implement saving model predictions in distributed mode
         if conf.get("distribute"):
@@ -524,7 +534,7 @@ def main():
         # (2) it may be easier to predict on sequences that the model has already seen
         # NOTE I'm evaluating on test
 
-        # <--- Saving Predictions
+        # Save predictions
         if not conf.get("skip_predictions"):
             d, labels, preds = [], [], []
             count_in_fold_predictions = 0
@@ -569,9 +579,8 @@ def main():
             run_manager.save_predictions(
                 df, conf.get("test_partition"), conf.get("test_fold")
             )
-            # --->
 
-        # Compute metrics and save
+        # Compute Metrics
         df = run_manager.load_predictions(
             conf.get("test_partition"), conf.get("test_fold")
         )
@@ -584,6 +593,8 @@ def main():
             ),
             verbose=True,
         )
+
+        # Save Metrics
         evaluation.save_metrics()
 
 

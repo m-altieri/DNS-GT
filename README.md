@@ -25,8 +25,7 @@ python3 -m pip install -r requirements.txt
 
 ### 1. Get the Data
 
-- Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset or //DATASET_URL// and save it in `<DATA_PATH>`.
-
+- Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset and save it in `<DATA_PATH>`.
 It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
 The total size of the dataset should be around 113 GiB.
 
@@ -51,7 +50,7 @@ git clone https://github.com/m-altieri/DNS-GT.git
 - Convert the pcap files into csv files using the [tshark](https://tshark.dev/setup/install/):
 
 ```
-src/preprocessing/pcap2csv.sh <DATA_PATH>
+sh src/preprocessing/pcap2csv.sh <DATA_PATH>
 ```
 
 This step performs an initial filtering, removing packets that are not DNS queries or that are malformed, and extracts only the relevant fields from each packet.
@@ -80,7 +79,7 @@ This will create the vocabulary (as a pair of two files, one for hosts and one f
 The vocabulary will be created in `<DATA_PATH>/vocab/`. 
 The query files will be created in `<DATA_PATH>/npy/`, and will be split automatically into a `train` folder containing the first 70% files, and a `test` folder containing the remaining 30% files.
 
-- Process the blacklists into a single csv
+- Process the blacklists
 
 Move the blacklists to the same path as the other data, to have all data-related files in a single place:
 
@@ -88,7 +87,7 @@ Move the blacklists to the same path as the other data, to have all data-related
 mv </path/to/>DNS-GT/data/blacklists <DATA_PATH>
 ```
 
-Merge blacklists in a single file, for each category and quality:
+Then. merge blacklists in a single file, for each category and quality:
 
 ```
 cd </path/to/>DNS-GT/src/scripts
@@ -140,17 +139,20 @@ The model weights, embeddings and configuration will be saved in the `runs` fold
 ### 5. Evaluate the Models
 
 - Finetune the Models End-to-end
+
 After a model is pretrained (and its weights are available in the `runs` folder), it can be finetuned in an end-to-end way with the `--ft` or `--finetune` flag. For instance:
 ```
 python3 train.py DELM -r first_run --ft
 ```
-- Afterwards, get predictions on the downstream task:
+
+Afterwards, get predictions on the downstream task:
 ```
 python3 train.py DELM -r first_run --evaluate
 ```
 
-- Use the pretrained embeddings to train external classifiers
-Instead of tinetuning, you can use the saved embeddings (`embeddings.npy` file) to train and evalute external classifiers using:
+- Alternatively, use the pretrained embeddings to train external classifiers
+
+Instead of finetuning, you can use the saved embeddings (`embeddings.npy` file) to train and evalute external classifiers using:
 ```
 python3 train_classifier.py <MODEL> <RUN_NAME>
 ```

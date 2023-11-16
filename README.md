@@ -46,7 +46,7 @@ git clone https://github.com/m-altieri/DNS-GT.git
 - Convert the pcap files into csv files using the tshark script:
 
 ```
-src/preprocessing/pcap2csv.sh <DATA_PATH>
+sh src/preprocessing/pcap2csv.sh <DATA_PATH>
 ```
 
 This step performs an initial filtering, removing packets that are not DNS queries or that are malformed, and extracts only the relevant fields from each packet.

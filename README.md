@@ -25,7 +25,7 @@ python3 -m pip install -r requirements.txt
 
 ### 1. Get the Data
 
-- Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset or //DATASET_URL// and save it in `<DATA_PATH>`.
+- Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset and save it in `<DATA_PATH>`.
 It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
 The total size of the dataset should be around 113 GiB.
 
@@ -134,17 +134,20 @@ The model weights, embeddings and configuration will be saved in the `runs` fold
 ### 5. Evaluate the Models
 
 - Finetune the Models End-to-end
+
 After a model is pretrained (and its weights are available in the `runs` folder), it can be finetuned in an end-to-end way with the `--ft` or `--finetune` flag. For instance:
 ```
 python3 train.py DELM -r first_run --ft
 ```
-- Afterwards, get predictions on the downstream task:
+
+Afterwards, get predictions on the downstream task:
 ```
 python3 train.py DELM -r first_run --evaluate
 ```
 
-- Use the pretrained embeddings to train external classifiers
-Instead of tinetuning, you can use the saved embeddings (`embeddings.npy` file) to train and evalute external classifiers using:
+- Alternatively, use the pretrained embeddings to train external classifiers
+
+Instead of finetuning, you can use the saved embeddings (`embeddings.npy` file) to train and evalute external classifiers using:
 ```
 python3 train_classifier.py <MODEL> <RUN_NAME>
 ```

@@ -2,6 +2,7 @@
 *.csv
 *.npy
 *.png
+!doc/*.png
 data/blacklists/*
 data/arrays/*
 data/vocabs/*

@@ -1,8 +1,6 @@
-_This README is a draft._
+# DNS-GT
 
-# GNN-NIDS (CDP No. 35452 -- Bari)
-
-GNN-NIDS is a project for malicious domain detection based on DNS queries using graph neural networks.
+DNS-GT is a a Transformer-based model that learns embeddings for domain names using DNS queries.
 
 ---
 
@@ -14,11 +12,13 @@ GNN-NIDS is a project for malicious domain detection based on DNS queries using 
 
 ## Requirements
 
+Make sure to use the Python and TensorFlow versions specified at the top of this page.
+
 ### Install the required libraries:
 
 For example,
 ```
-python3 -m pip install <requirement>
+python3 -m pip install -r requirements.txt
 ```
 
 ## Usage

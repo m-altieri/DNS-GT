@@ -1,7 +1,7 @@
 absl-py==1.4.0
 astunparse==1.6.3
 cachetools==5.3.0
-certifi @ file:///croot/certifi_1683875369620/work/certifi
+certifi
 charset-normalizer==3.1.0
 colorama==0.4.6
 combo==0.1.3

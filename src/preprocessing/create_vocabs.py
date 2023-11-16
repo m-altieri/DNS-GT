@@ -1,7 +1,16 @@
-import numpy as np
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""Host and domain vocabulary creation from preprocessed CSV files.
+"""
+
+
 import os
-import argparse
 import re
+import sys
+import argparse
+import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from colorama import Fore, Style
 
@@ -9,34 +18,45 @@ from colorama import Fore, Style
 # parse arguments
 argparser = argparse.ArgumentParser()
 argparser.add_argument(
-    "--queries-folder",
-    default="/mnt/storage15/TI-2016-preprocessed/arrays/all/queries/train",
+    "path", help="Path to the folder containing the preprocessed CSV files."
 )
-argparser.add_argument("--output-folder", default="vocabs/all/exp/")
+# argparser.add_argument(
+#     "--queries-folder",
+#     default="/mnt/storage15/TI-2016-preprocessed/arrays/all/queries/train",
+# )
+argparser.add_argument(
+    "output_folder",
+    help="Path of the folder where the vocabulary will be saved. Note that, in that folder, two files will be created.",
+)
 args = argparser.parse_args()
 
 # initialize hosts and domains
 hosts, domains = ([], []), ([], [])
 
 # for each file in the queries folder
+csvs_path = os.path.join(args.path, "pcsv")
 c = 0
-for f in (pbar := tqdm(os.listdir(args.queries_folder))):
+for f in (pbar := tqdm(os.listdir(csvs_path))):
     c += 1
 
-    # # skip irrelevant files
-    if not f.endswith(".npy"):
+    # skip irrelevant files
+    if not f.endswith(".csv"):
         continue
 
     # load the file
-    q = np.load(os.path.join(args.queries_folder, f), allow_pickle=True)
+    df = pd.read_csv(os.path.join(csvs_path, f), delimiter=";")
+
+    # q = np.load(os.path.join(args.queries_folder, f), allow_pickle=True)
     pbar.set_description(
-        f"[File {c}] {len(q):,} new queries, {np.sum(hosts[1]):,.0f} total,"
+        f"[File {c}] {len(df):,} new queries, {np.sum(hosts[1]):,.0f} total,"
         + f" unique: {len(hosts[0]):,} hosts / {len(domains[0]):,} domains"
     )
 
     # get hosts and domains
-    new_hosts = q[:, 0]
-    new_domains = q[:, 1]
+    # new_hosts = df[:, 0]
+    # new_domains = q[:, 1]
+    new_hosts = df["ip_src"]
+    new_domains = df["qry_name"]
 
     # remove non-ascii characters
     new_hosts = list(map(lambda h: re.sub("[^!-~\\n]+", "", h), new_hosts))
@@ -63,6 +83,7 @@ for f in (pbar := tqdm(os.listdir(args.queries_folder))):
         np.concatenate((domains[0], new_domains[0][out_idx])),
         np.concatenate((domains[1], new_domains[1][out_idx])),
     )
+
 
 # sort hosts and domains by count
 sorter = np.argsort(hosts[1])[::-1]

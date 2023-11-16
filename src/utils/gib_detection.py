@@ -20,7 +20,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE."""
 
+import os
+import sys
 import math
+
+current_path = os.path.dirname(__file__)
+sys.path.append(current_path)
 
 
 class GibDetector:
@@ -43,9 +48,9 @@ class GibDetector:
 
     def train(
         self,
-        training_data_path="../utils/.gib_detector_trainingdata.txt",
-        good_examples_path="../utils/.gib_detector_goodexamples.txt",
-        bad_examples_path="../utils/.gib_detector_badexamples.txt",
+        training_data_path=os.path.join(current_path, ".gib_detector_trainingdata.txt"),
+        good_examples_path=os.path.join(current_path, ".gib_detector_goodexamples.txt"),
+        bad_examples_path=os.path.join(current_path, ".gib_detector_badexamples.txt"),
     ):
         """Write a simple model as a pickle file"""
         k = len(self.accepted_chars)

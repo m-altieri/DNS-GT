@@ -211,7 +211,7 @@ class DELM(tf.keras.Model):
             )
 
         self.finetuning = False
-        self.initialize = True  # NOTE if this is a tf.Variable(True), and i modify it with .assign(), the weights won't save
+        self.initialized = False  # TODO if this is a tf.Variable(False), and i modify it with .assign(), the weights won't save
 
         # TensorBoard Init
         TB_FOLDER = f"../tensorboard/{conf.get('model')}"
@@ -496,10 +496,10 @@ class DELM(tf.keras.Model):
         # Force initializiation of weights for both layers by calling them both even if not needed;
         # this prevents problems when loading weights
         # NOTE this is memory inefficient, check if the problem can be fixed in another way
-        if self.initialize:
+        if not self.initialized:
             res = self.masked_classifier(emb)
             res = self.binary_classifier(emb)
-            self.initialize = False
+            self.initialized = True
 
         if not self.finetuning:
             res = self.masked_classifier(emb)

@@ -35,6 +35,7 @@ class SequenceGenerator:
     ...   print(sequence)
     """
 
+    # TODO some kwargs are not fully supported.
     def __init__(
         self,
         input_folder: str,
@@ -45,7 +46,6 @@ class SequenceGenerator:
         **kwargs: Any,
     ) -> None:
         """Initialize a SequenceGenerator object.
-        TODO some kwargs are not fully supported.
 
         Args:
             input_folder (str): folder containing .npy files, each representing a matrix of shape `(n_queries, 2)` or `(n_queries, 3)` ,
@@ -83,16 +83,11 @@ class SequenceGenerator:
         # For each query file
         for f in os.listdir(self.input_folder):
             # Ignore file if it's not a .npy
-            if (
-                os.path.splitext(os.path.join(self.input_folder, f))[-1]
-                != ".npy"
-            ):
+            if os.path.splitext(os.path.join(self.input_folder, f))[-1] != ".npy":
                 continue
 
             # Load queries from file
-            queries = np.load(
-                os.path.join(self.input_folder, f), allow_pickle=True
-            )
+            queries = np.load(os.path.join(self.input_folder, f), allow_pickle=True)
 
             # Pair up queries with domain class if necessary
             if self.include_class:
@@ -159,9 +154,7 @@ class SequenceGenerator:
 
         # add class to each query
         sorter = np.argsort(labels[:, 0])
-        idx = sorter[
-            np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)
-        ]
+        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
         classes = labels[idx, 1]
         queries = np.concatenate(
             [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
@@ -244,9 +237,7 @@ class FixedSequencingStrategy:
         for i, _ in enumerate(seqs):
             if include_start:
                 seqs[i][0] = ["<START>", "<START>"]
-            seqs[i][include_start:] = queries[
-                i * stride : i * stride + actual_seqlen
-            ]
+            seqs[i][include_start:] = queries[i * stride : i * stride + actual_seqlen]
 
         return np.array(seqs, dtype=str)
 
@@ -412,47 +403,3 @@ class TimeWindowStrategy:
         seqs = np.delete(seqs, 2, axis=-1)
 
         return seqs
-
-
-# Deprecated
-# class W2VStrategy:
-#     def make_sequences(
-#         self,
-#         queries: np.ndarray,
-#         seqlen: int,
-#         include_class: bool,
-#         group_by_host: bool,
-#         **kwargs: Any,
-#     ) -> np.ndarray:
-#         # queries: [n_qry_in_file, 3] (host, domain, timestamp)
-#         # Output: [n_seqs, seqlen, 1or2] (2 in finetuning): [..., context_-2, context_-1, target, context_+1, context_+2, ...]
-#         assert seqlen % 2 == 1
-
-#         # sort queries by host, and within each host by timestamp
-#         if group_by_host:
-#             queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
-
-#         # remove host and timestamp
-#         queries = np.delete(queries, [0, 2], axis=1)
-
-#         # if the domain is a list (tokenized), take the first element
-#         # TODO this is only ok for TrivialTokenizer
-#         if queries.shape[-1] == 1:
-#             queries = np.array([[q[0][0]] for q in queries])
-#         else:  # if it includes the class
-#             queries = np.array([[q[0][0], q[1]] for q in queries])
-
-#         radius = seqlen // 2
-#         seqs = []
-#         for index in range(0, len(queries), kwargs.get("stride", 1)):
-#             left_overflow = max(radius - index, 0)
-#             right_overflow = max(radius - (len(queries) - index - 1), 0)
-#             seqs.append(
-#                 queries[
-#                     max(0, index - radius - right_overflow) : min(
-#                         index + radius + 1 + left_overflow, len(queries)
-#                     )
-#                 ]
-#             )
-
-#         return seqs

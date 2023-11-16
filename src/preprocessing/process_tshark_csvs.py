@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Preprocessing of CSV files after conversion with `tshark`.
 
@@ -10,8 +11,8 @@ request:
     DNS packet with destination port equal to 53
 response:
     DNS packet with source port equal to 53
-resolver
-    - IP with packets sent 
+resolver:
+    IP with responses sent or requests received
 
 Valid IPs are sorted as follows:
     - at least 100 requests for the current hour,
@@ -22,50 +23,46 @@ Valid IPs are sorted as follows:
 Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
 Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
 """
+import os
 import sys
+import argparse
 import pandas as pd
 from datetime import datetime
 
-sys.path.append("../lib")
-from tacks.utils.base import Workspace, get_argparser, get_config
-
-# -- Argument Parser and Workspace
-
-argparser = get_argparser(
-    sys.modules[__name__].__doc__,
-    flags=["debug", "silent"],
-)
-
+# -- Argument Parsing
+argparser = argparse.ArgumentParser()
+argparser.add_argument("data_path")
 args = argparser.parse_args()
-args.force = True
-
-workspace = Workspace(name="PCAP_Dataset", instance_name="Preprocessing", args=args)
-config = get_config()
-
 
 # -- Data
-data_path = config.get_path("paths", "data") / "TI-2016"
-tcsv_path = data_path / "tcsv"
+data_path = args.data_path
+tcsv_path = os.path.join(data_path, "tcsv")
 
-pcsv_path = data_path / "pcsv"
-pcsv_path.mkdir(exist_ok=True)
+pcsv_path = os.path.join(data_path, "pcsv")
+if not os.path.exists(pcsv_path):
+    os.makedirs(pcsv_path)
 
-(data_path / "artifacts").mkdir(exist_ok=True)
+if not os.path.exists(artifacts_path := os.path.join(data_path, "artifacts")):
+    os.makedirs(artifacts_path)
 
 # -- Preprocessing
-for tcsvfile_path in tcsv_path.glob("*.csv"):
-    workspace.logger.info(f"Analysing {tcsvfile_path}...")
+for filename in os.listdir(tcsv_path):
+    print(f"Analysing {filename}...")
 
-    # get file name
-    filename = tcsvfile_path.name
+    # check whether the file is not a csv
+    if os.path.splitext(filename)[1] != ".csv":
+        print(f"Skipping {filename}: not a .csv")
+        continue
 
     # check whether the file was already pre-processed
-    if (pcsv_path / filename).exists():
-        workspace.logger.info("Already preprocessed tshark CSV. Skipped.")
+    if os.path.exists(os.path.join(pcsv_path, filename)):
+        print(f"Skipping {filename}: already preprocessed.")
         continue
 
     # load packets with pandas
-    packets = pd.read_csv(str(tcsvfile_path), delimiter=";", on_bad_lines="skip")
+    packets = pd.read_csv(
+        os.path.join(tcsv_path, filename), delimiter=";", on_bad_lines="skip"
+    )
 
     # renaming column names
     packets = packets.rename(
@@ -189,55 +186,6 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
         ip_info["n_responses_sent"] > 0
     )
 
-    # requests, responses, is_resolver = [], [], []
-
-    # for each unique ip within the current hour, its number of requests,
-    # responses, and whether it is a resolver
-
-    # for ip in ips:
-    #     # get number of requests
-    #     requests.append(
-    #         len(packets[(packets["ip_src"] == ip) & (packets["port_dst"] == 53)])
-    #     )
-
-    #     # get number of responses
-    #     responses.append(
-    #         len(packets[(packets["ip_dst"] == ip) & (packets["port_src"] == 53)])
-    #     )
-
-    #     # whether it is a resolver
-    #     is_resolver.append(
-    #         not packets[(packets["ip_src"] == ip) & (packets["port_src"] == 53)].empty
-    #         or not packets[
-    #             (packets["ip_dst"] == ip) & (packets["port_dst"] == 53)
-    #         ].empty
-    #     )
-
-    # ip_info2 = pd.DataFrame(
-    #     {
-    #         "ip": ips,
-    #         "requests": requests,
-    #         "responses": responses,
-    #         "is_resolver": is_resolver,
-    #     }
-    # )
-
-    # # Test
-    # for ip in ips:
-    #     assert (
-    #         ip_info[ip_info["ip"] == ip]["requests"].iloc[0]
-    #         == ip_info2[ip_info2["ip"] == ip]["n_requests_sent"].iloc[0]
-    #     )
-
-    #     assert (
-    #         ip_info[ip_info["ip"] == ip]["responses"].iloc[0]
-    #         == ip_info2[ip_info2["ip"] == ip]["n_responses_received"].iloc[0]
-    #     )
-    #     assert (
-    #         ip_info[ip_info["ip"] == ip]["is_resolver"].iloc[0]
-    #         == ip_info2[ip_info2["ip"] == ip]["is_resolver"].iloc[0]
-    #     )
-
     # get valid IPs
     ip_info["ratio_req_res"] = (
         ip_info["n_requests_sent"] / ip_info["n_responses_received"]
@@ -250,13 +198,11 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
     )
 
     # save info on IPS as CSV
-    ip_info.to_csv(data_path / "artifacts" / f"{filename}_ip_info.csv")
+    ip_info.to_csv(os.path.join(artifacts_path, f"{filename}_ip_info.csv"))
 
     valid_ips = ip_info[ip_info["is_valid"]]["ip"]
 
-    # select from the csv file only the requests, sent by an ip in good_ips, of type A,
-    # not retransmission, [TODO having a response with the same id within 60 seconds]
-
+    # select from the csv file only the requests, sent by an ip in good_ips, of type A, not retransmission
     valid_packets = packets[
         packets["ip_src"].isin(valid_ips)
         & (packets["port_dst"] == 53)
@@ -264,8 +210,6 @@ for tcsvfile_path in tcsv_path.glob("*.csv"):
         & (packets["qry_type"] == "A")
     ]
 
-    valid_packets.to_csv(pcsv_path / filename, sep=";")
+    valid_packets.to_csv(os.path.join(pcsv_path, filename), sep=";")
 
-    workspace.logger.info(
-        "Found %d valid packets for %d IPs", len(valid_packets), len(valid_ips)
-    )
+    print(f"Found {len(valid_packets)} valid packets for {len(valid_ips)} IPs")

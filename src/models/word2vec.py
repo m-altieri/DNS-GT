@@ -73,6 +73,7 @@ class ParallelW2V(tf.keras.Model):
         assert self.conf["type"] == "CBOW" or self.conf["type"] == "SkipGram"
 
         self.finetuning = False
+        self.initialized = False
 
         # TODO the whole test folds thing should be refactored out
         if self.conf.get("test_fold") is not None:
@@ -137,7 +138,6 @@ class ParallelW2V(tf.keras.Model):
         )
         # --->
 
-        self.initialized = False
 
         # Layers
         self.ndomains = self.domain_lookup.vocabulary_size()

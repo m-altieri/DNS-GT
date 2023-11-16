@@ -1,20 +1,21 @@
-from colorama import Fore, Style
-from tqdm import tqdm
-import pandas as pd
-import sys
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""Create labels for domain names in the vocabulary according to the provided blacklists."""
+
 import os
+import argparse
+import pandas as pd
+from tqdm import tqdm
 
 
-# small_domains_path = "../../data/vocabs/small/domains_vocab.txt"
-# all_domains_path = "../../data/vocabs/all/domains_vocab.txt"
-domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
-blacklist_paths = "../../blacklists"
+argparser = argparse.ArgumentParser()
+argparser.add_argument("path", help="Path to the data folder.")
+args = argparser.parse_args()
 
-# with open(small_domains_path, "r") as f:
-#     small_domains = f.read().split("\n")
+domains_path = os.path.join(args.path, "vocab/domains_vocab.txt")
+blacklist_paths = os.path.join(args.path, "blacklists")
 
-# with open(all_domains_path, "r") as f:
-#     all_domains = f.read().split("\n")
 
 with open(domains_path, "r") as f:
     domains = f.read().split("\n")
@@ -33,33 +34,21 @@ with open(
     os.path.join(blacklist_paths, "malicious", "good", "blacklist.txt"), "r"
 ) as f:
     blacklists["malicious_good"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "malicious", "ok", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "malicious", "ok", "blacklist.txt"), "r") as f:
     blacklists["malicious_ok"] = f.read().split("\n")
 with open(
     os.path.join(blacklist_paths, "suspicious", "good", "blacklist.txt"), "r"
 ) as f:
     blacklists["suspicious_good"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "suspicious", "ok", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "suspicious", "ok", "blacklist.txt"), "r") as f:
     blacklists["suspicious_ok"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "tracking", "good", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "tracking", "good", "blacklist.txt"), "r") as f:
     blacklists["tracking_good"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "tracking", "ok", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "tracking", "ok", "blacklist.txt"), "r") as f:
     blacklists["tracking_ok"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "other", "good", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "other", "good", "blacklist.txt"), "r") as f:
     blacklists["other_good"] = f.read().split("\n")
-with open(
-    os.path.join(blacklist_paths, "other", "ok", "blacklist.txt"), "r"
-) as f:
+with open(os.path.join(blacklist_paths, "other", "ok", "blacklist.txt"), "r") as f:
     blacklists["other_ok"] = f.read().split("\n")
 
 # Remove empty strings
@@ -162,27 +151,4 @@ df["any", "ok"] = df["any", "ok"].where(
 )
 
 print(df)
-df.to_csv("labels.csv")
-
-# malicious = list(set(blacklist) & set(domains))
-# print("Exact matches:", len(malicious))
-
-# print("Matching subdomains...")
-# # Etichetto come malicious tutti i sottodomini di quelli malicious
-# nonmalicious = list(set(domains) - set(malicious))
-# with tqdm(
-#     total=len(nonmalicious),
-#     bar_format="{desc:<25.25}{percentage:3.2f}%|{bar:10}{r_bar}",
-# ) as pbar:
-#     for d in nonmalicious:
-#         splitted = d.split(".")
-#         for l in range(1, len(splitted)):  # for each level
-#             subdomain = ".".join(splitted[-l:])
-#             if subdomain in malicious:
-#                 malicious.append(d)
-#                 pbar.set_description(
-#                     f"{d[:-len(subdomain)]}{Style.BRIGHT}{subdomain}{Style.RESET_ALL}"
-#                 )
-#         pbar.update()
-
-# print("Malicious:", len(malicious))
+df.to_csv(os.path.join(args.path, "labels.csv"))

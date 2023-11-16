@@ -95,6 +95,9 @@ src/scripts/label_domains.py <DATA_PATH>
 
 This script will create a `labels.csv` file in `<DATA_PATH>` containing domains names, and booleans (0 or 1) for their blacklisted status, for all blacklist categories (advertising, malicious, suspicious, tracking, other, and any) and quality (good and ok), for a total of 13 significative columns.
 
+- Create test folds
+As a last preprocessing step, it is required to create test folds for the downstream task.
+To do this:
 
 ### 4. Pretrain the Models
 
@@ -139,47 +142,10 @@ python3 train_classifier.py <MODEL> <RUN_NAME>
 ```
 Optionally, it's possible to balance the training classes automatically with the `-b` flag. By default, the used blacklist is the one for category 'any' and quality 'good'. This can be changed with flags `--category` and `--q`, respectively.
 
-
-### Docker (unstable)
-```
-docker run -it --gpus all -p 6006:6006 delm "python3 train.py --gpu 0 --quick-tb & { sleep 30; tensorboard --host=0.0.0.0 --logdir=tmp; };"
-```
-
-
-## Roadmap (out of date)
-*Current Paper:*
-- [x] General dataset analysis and overview
-- [x] PCAP preprocessing and query information extraction into csv
-- [x] Vocabulary and query dataset creation from csv
-- [x] Design and implement core model components
-- [x] Configure the model with external conf files
-- [x] Training script with tf.data API
-- [x] Add `<START>` token
-    - [x] Show sequence contextualized representation examples 
-- [x] Demo for model playesting and debugging 
-- [x] Calculate gradients only for the masked tokens
-    - [x] Zero-ed out loss for non-masked tokens
-    - [x] Check that gradients are correctly calculated
-- [x] Use the BERT token masking technique (80% mask, 10% random, 10% stays)
-- [x] Improve propagation towards `<START>` and `<MASK>` tokens
-    - [x] `<START>` and `<MASK>` are always connected with all tokens
-- [x] Add an add & norm as well as a skip-connection to the MH-GAT block
-- [x] Add a `blocks` hyperparameter that tells how many times to repeat the MH-GAT block
-- [x] (Possibly.) Only connect token embeddings with the same host
-    - [x] It's not an adjacency, it's done at data pipeline level. Use --group-hosts to sort queries by host and make each sequence contain queries from the same host. The order of queries for the same host stays unchanged.
-- [x] Visualize clusters of domain embeddings
-
-*Future Extensions:*
-- [ ] Implement at least two domain adjacency matrices (hierarchical and behavioral)
-    - [x] Implemented hierarchical similarity
-    - [ ] Implement behavioral similarity
-- [ ] Dynamic vocabulary and embedding extension
-    - [x] Add `<UNK>` token
-- [x] Improve the sequencing module with custom algorithm
-    - [x] Add `<PAD>` token
-    
 ---
 
 **Contacts:**
-Massimiliano ALTIERI
+
+Massimiliano ALTIERI \
+massimiliano.altieri@uniba.it \
 massimiliano.altieri@ec.europa.eu

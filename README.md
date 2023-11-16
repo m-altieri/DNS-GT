@@ -1,4 +1,3 @@
-
 _This README is a draft._
 
 # GNN-NIDS (CDP No. 35452 -- Bari)
@@ -30,7 +29,8 @@ python3 -m pip install <requirement>
 It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
 The total size of the dataset should be around 113 GiB.
 
-- The blacklists are included in the code repository in the `data` folder
+- The blacklists can be downloaded from `https://firebog.net`.
+To replicate our experiments: download all lists except the ones that have a strikethrough. Then, create a folder named `blacklists`, with 5 subfolders `advertising`, `malicious`, `other`, `suspicious` and `tracking`. Each of these subfolders has in turn two subfolders `good` and `ok`. Place in each category the respective lists as downloaded from the provided URL, placing the checkmarked ones in green into `good` and the others into `ok`.
 
 
 ### 2. Get the Code
@@ -38,7 +38,6 @@ The total size of the dataset should be around 113 GiB.
 Clone the repository containing the necessary code and scripts: // update link with github:
 ```
 git clone https://github.com/m-altieri/DNS-GT.git
-cd DNS-GT
 ```
 
 

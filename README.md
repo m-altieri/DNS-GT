@@ -7,11 +7,11 @@ GNN-NIDS is a project for malicious domain detection based on DNS queries using 
 
 ---
 
-![Python 3.9](https://img.shields.io/badge/python-3.9-green)
-![TensorFlow 2.12](https://img.shields.io/badge/tensorflow-2.12-green)
+![Python 3.9](doc/shields/python-3.9-green.png)
+![TensorFlow 2.12](doc/shields/tensorflow-2.12-green.png)
 
-![Flower](doc/flower.png)
-![Rocs](doc/rocs.png)
+![Flower](doc/images/flower.png)
+![Rocs](doc/images/rocs.png)
 
 ## Requirements
 

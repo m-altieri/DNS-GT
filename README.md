@@ -73,14 +73,15 @@ python3 csv2npy.py <DATA_PATH>
 
 This will create, at the same time, the vocabulary, and save it to `<VOCAB_PATH>` as a pair of two files, one for hosts and one for domains, and also the final query files in npy format. The vocabulary will be created in `<DATA_PATH>/vocab/`. The npy files will be created in `<DATA_PATH>/npy/`, and will be split automatically into a `train` folder containing the first 70% files, and a `test` folder containing the remaining 30% files.
 
-- Process the blacklists into a single csv
-Move the blacklists to the same path as the other data, to have all data-related files in a single place:
+- Process the blacklists
+
+First move the blacklists to the same path as the other data, to have all data-related files in a single place:
 
 ```
 mv </path/to/>DNS-GT/data/blacklists <DATA_PATH>
 ```
 
-Merge blacklists in a single file, for each category and quality:
+Then. merge blacklists in a single file, for each category and quality:
 
 ```
 cd </path/to/>DNS-GT/src/scripts
@@ -100,6 +101,7 @@ python3 label_domains.py <DATA_PATH>
 This script will create a `labels.csv` file in `<DATA_PATH>` containing domains names, and booleans (0 or 1) for their blacklisted status, for all blacklist categories (advertising, malicious, suspicious, tracking, other, and any) and quality (good and ok), for a total of 13 significative columns.
 
 - Create test folds
+
 As a last preprocessing step, it is required to create test folds for the downstream task.
 To do this, run:
 ```

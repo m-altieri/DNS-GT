@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import json
 import argparse
@@ -5,10 +7,10 @@ import numpy as np
 import pandas as pd
 from colorama import Style
 from sklearn.metrics import (
-    confusion_matrix,
     f1_score,
-    accuracy_score,
     roc_auc_score,
+    accuracy_score,
+    confusion_matrix,
 )
 
 # Binary models
@@ -26,16 +28,28 @@ from pyod.models.copod import COPOD
 
 from utils.evaluation import Evaluation
 
+# os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument(
-        "model", action="store", help="Model name to retrieve embeddings."
+        "model", action="store", help="Model to retrieve the learned embeddings from."
     )
     argparser.add_argument(
-        "run", action="store", help="Run name to retrieve embeddings."
+        "run",
+        action="store",
+        help="Name of the run to retrieve the learned embeddings from. "
+        + "The file embeddings.npy must be present in the run folder. ",
     )
-    argparser.add_argument("-b", "--balanced", action="store_true")
+    argparser.add_argument(
+        "-b",
+        "--balanced",
+        action="store_true",
+        help="Whether to balance the positive and negative training classes, "
+        + "so that there are the same amount of examples in each class. "
+        + "False by default. The test classes are never balanced.",
+    )
     argparser.add_argument(
         "--category",
         action="store",
@@ -48,11 +62,28 @@ def parse_args():
             "other",
             "any",
         ],
+        help="Types of blacklists to use to provide labels for domain names. "
+        + "If --category any (default), all blacklist types are used and merged.",
     )
     argparser.add_argument(
-        "--q", action="store", default="good", choices=["good", "ok"]
+        "--q",
+        action="store",
+        default="good",
+        choices=["good", "ok"],
+        help="Choose the quality of the domain labels to use for classification. "
+        + "Quality, in this context, refers to what and how many blacklists are used to generate those labels. "
+        + "With --q good (default), only a subset of highly rated blacklists are used, "
+        + "with --q ok, all available blacklists are used.",
     )
-    argparser.add_argument("--max-tokens", action="store", type=int)
+
+    # DEPRECATED
+    # argparser.add_argument(
+    #     "--max-tokens",
+    #     action="store",
+    #     type=int,
+    #     help="Truncate to a certain number of embeddings for evaluation.",
+    # )
+
     args = argparser.parse_args()
     return args
 
@@ -64,7 +95,7 @@ def main():
     emb_path = os.path.join("../runs", args.model, args.run, "embeddings.npy")
     embs = np.load(emb_path)
 
-    # remove "[UNK]" (first index in the embeddings, not in the vocabulary), and "" (for some reason, last index in the embeddings)
+    # Remove "[UNK]" (first index in the embeddings, not in the vocabulary), and "" (for some reason, last index in the embeddings)
     embs = embs[1:-1]
     print("Loaded embs with shape:", embs.shape)
 
@@ -95,10 +126,11 @@ def main():
     with open(vocab_path, "r") as f:
         vocab = [l.strip() for l in f.readlines()]
 
-    # if --max-tokens, truncate the vocabulary
-    if args.max_tokens:
-        vocab = vocab[: args.max_tokens]
-        print(f"Truncated vocab to first {args.max_tokens} tokens.")
+    # TODO It should not be used anymore. Always evaluate all learned embeddings
+    # # if --max-tokens, truncate the vocabulary
+    # if args.max_tokens:
+    #     vocab = vocab[: args.max_tokens]
+    #     print(f"Truncated vocab to first {args.max_tokens} tokens.")
 
     # check that embeddings and vocabulary have the same length
     if len(embs) != len(vocab):
@@ -149,9 +181,7 @@ def main():
     test_domains = np.load(
         "/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-0/fold-0.npy"
     )
-    test_indexes = np.sort(
-        np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1]
-    )
+    test_indexes = np.sort(np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1])
 
     train_X = np.delete(X, test_indexes, axis=0)
     train_y = np.delete(y, test_indexes, axis=0)
@@ -186,16 +216,12 @@ def main():
         )
 
         model.fit(
-            X=oneclass_train_X
-            if Models[Model]["conf"].get("oneclass")
-            else train_X,
+            X=oneclass_train_X if Models[Model]["conf"].get("oneclass") else train_X,
             y=None if Models[Model]["conf"].get("oneclass") else train_y,
         )
 
         # Predict and save preds
-        preds, probs = model.predict(
-            test_X
-        )  # it gives me the prob for the two classes
+        preds, probs = model.predict(test_X)  # it gives me the prob for the two classes
         probs = probs[:, 1]
 
         df = pd.DataFrame(
@@ -210,9 +236,7 @@ def main():
         if not os.path.exists(
             os.path.join(predictions_path, args.model, "predictions")
         ):
-            os.makedirs(
-                os.path.join(predictions_path, args.model, "predictions")
-            )
+            os.makedirs(os.path.join(predictions_path, args.model, "predictions"))
         df.to_csv(
             os.path.join(
                 predictions_path, args.model, "predictions", f"preds-fold0.csv"
@@ -231,22 +255,25 @@ def main():
         )
         evaluation.save_metrics()
 
-        # Evaluate OLD  # TODO deprecate
-        scores = model.evaluate(test_y, preds, probs, metrics)
-        results[Model.__name__] = {
-            metric: results[Model.__name__].get(metric, 0.0) + scores[metric]
-            for metric in scores
-        }
-        print(scores)
+        print(evaluation.results)
 
-    # TODO old evaluation, deprecate
-    for Model in Models:
-        results[Model.__name__] = {
-            metric: results[Model.__name__][metric]
-            for metric in results[Model.__name__]
-        }
-    print(f"\n{Style.BRIGHT}Results:{Style.RESET_ALL}")
-    print(json.dumps(results, indent=4))
+    #     # Evaluate OLD  # TODO deprecate
+    #     scores = model.evaluate(test_y, preds, probs, metrics)
+    #     results[Model.__name__] = {
+    #         metric: results[Model.__name__].get(metric, 0.0) + scores[metric]
+    #         for metric in scores
+    #     }
+    #     print(scores)
+
+    # # TODO old evaluation, deprecate
+    # for Model in Models:
+    #     results[Model.__name__] = {
+    #         metric: results[Model.__name__][metric]
+    #         for metric in results[Model.__name__]
+    #     }
+
+    # print(f"\n{Style.BRIGHT}Results:{Style.RESET_ALL}")
+    # print(json.dumps(results, indent=4))
 
 
 def get_balanced_indices(labels):
@@ -256,9 +283,7 @@ def get_balanced_indices(labels):
             "For now, negative samples must be more than positive ones"
         )
     pos_idx = np.where(labels == 1)[0]
-    neg_idx = np.random.choice(
-        np.where(labels == 0)[0], len(pos_idx), replace=False
-    )
+    neg_idx = np.random.choice(np.where(labels == 0)[0], len(pos_idx), replace=False)
     return np.sort(np.concatenate((neg_idx, pos_idx)))
 
 

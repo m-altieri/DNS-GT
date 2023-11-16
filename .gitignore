@@ -2,7 +2,7 @@
 *.csv
 *.npy
 *.png
-blacklists/
+data/blacklists/*
 data/arrays/*
 data/vocabs/*
 tensorboard/*

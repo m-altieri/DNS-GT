@@ -80,14 +80,10 @@ class RunManager:
 
         # Create path if it doesn't exist
         if not os.path.exists(
-            os.path.join(
-                self._PROJECT_ROOT, "runs", self.model_name, self.run_name
-            )
+            os.path.join(self._PROJECT_ROOT, "runs", self.model_name, self.run_name)
         ):
             os.makedirs(
-                os.path.join(
-                    self._PROJECT_ROOT, "runs", self.model_name, self.run_name
-                )
+                os.path.join(self._PROJECT_ROOT, "runs", self.model_name, self.run_name)
             )
 
         # Store correct paths for weights, embeddings and conf
@@ -118,7 +114,6 @@ class RunManager:
             return model_object
 
     def save_weights(self, model_object: tf.keras.Model = None) -> None:
-
         model_object = self._assert_and_get_model(model_object)
         try:
             model_object.save_weights(self.weights_path)
@@ -135,12 +130,10 @@ class RunManager:
                 )
 
     def save_embeddings(self, model_object: tf.keras.Model = None) -> None:
-
         model_object = self._assert_and_get_model(model_object)
         try:
-            domain_embeddings = (
-                model_object.domain_embeddings.embeddings.numpy()
-            )  # TODO may break if model class uses a different variable name; use a get_embeddings() function instead
+            # TODO may break if model class uses a different variable name; use a get_embeddings() method instead
+            domain_embeddings = model_object.domain_embeddings.embeddings.numpy()
             np.save(self.embeddings_path, domain_embeddings)
         except Exception as e:
             print(
@@ -155,7 +148,6 @@ class RunManager:
                 )
 
     def save_conf(self, model_object: tf.keras.Model = None) -> None:
-
         model_object = self._assert_and_get_model(model_object)
 
         conf_to_save = dict(model_object.conf)
@@ -183,7 +175,6 @@ class RunManager:
                 )
 
     def save_predictions(self, predictions, test_partition, test_fold):
-
         # Create predictions folder if it doesn't exist
         if not os.path.exists(self.predictions_path):
             os.makedirs(self.predictions_path)
@@ -345,12 +336,9 @@ class RunManager:
         run_name: str = None,
         finetuning: bool = False,
     ):
-
         # check for ValueErrors
         if self.model_name is None and model_name is None:
-            raise ValueError(
-                f"{Fore.RED}model_name must be specified.{Fore.RESET}"
-            )
+            raise ValueError(f"{Fore.RED}model_name must be specified.{Fore.RESET}")
         if self.run_name is None and run_name is None and not self.last:
             raise ValueError(
                 f"{Fore.RED}run_name must be specified if load is False."
@@ -366,9 +354,7 @@ class RunManager:
             run_name = self.run_name
 
         # set weights, embeddings, conf and predictions paths
-        run_path = os.path.join(
-            self._PROJECT_ROOT, "runs", model_name, run_name
-        )
+        run_path = os.path.join(self._PROJECT_ROOT, "runs", model_name, run_name)
         weights_path = os.path.join(
             run_path,
             self._WEIGHTS_FILE_NAME

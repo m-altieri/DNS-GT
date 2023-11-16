@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import sys
 import time
@@ -14,9 +16,9 @@ from models import DELM, ParallelW2V
 
 from utils.data_loading import (
     SequenceGenerator,
+    TimeWindowStrategy,
     FixedSequencingStrategy,
     ClusterSequencingStrategy,
-    TimeWindowStrategy,
 )
 from utils.formatting import indent
 from utils.evaluation import Evaluation
@@ -37,6 +39,8 @@ def parse_args():
         action="store",
         help="Specify which run to use as a starting point for training.",
     )
+
+    # DEPRECATED
     argparser.add_argument(
         "--load",
         action="store",
@@ -57,9 +61,7 @@ def parse_args():
         help="Number of training epochs",
     )
     argparser.add_argument("--bs", action="store", type=int, help="Batch size")
-    argparser.add_argument(
-        "--lr", action="store", type=float, help="Learning rate"
-    )
+    argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
     argparser.add_argument(
         "--demo",
         action="store_true",
@@ -113,14 +115,13 @@ def parse_args():
     )
     argparser.add_argument("--eager", action="store_true")
     argparser.add_argument("--blocks", action="store", type=int)
+    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
     argparser.add_argument(
-        "--group-by-host", action="store", default=True, type=bool
-    )
-    argparser.add_argument(
+        "-r",
         "--run-name",
         action="store",
         default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
-        help="Name used when saving to file. Has no effect if --load.",
+        help="Name used when saving to file. Used for loading a previous run for inference or further training.",
     )
     argparser.add_argument("--omega", action="store", type=float)
     argparser.add_argument("--shuffle", action="store_true")
@@ -189,16 +190,16 @@ def parse_args():
 
 
 def init_gpus(conf):
-    """Perform the necessary GPU-related initializations.
+    """Perform the necessary GPU-related initializations according to the specified `conf` dict.
 
-    Args:
-        conf (dict): the current run configuration.
+    :param conf: The current run configuration.
+    :type conf: dict
     """
 
     # Get total number of GPUs
     n_gpus = len(tf.config.list_physical_devices())
 
-    # If gpu contains -1, use all GPUs instead
+    # If the gpu parameter contains -1, use all GPUs instead
     if -1 in conf.get("gpu"):
         conf["gpu"] = list(range(n_gpus))
 
@@ -207,9 +208,9 @@ def init_gpus(conf):
         conf["distribute"] = True
 
         # if distribute, all devices must be visible, to avoid possible bugs
-        assert tf.config.get_visible_devices(
+        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
             "GPU"
-        ) == tf.config.list_physical_devices("GPU")
+        )
 
     # Otherwise if gpu is a single number, don't run in distribute mode
     else:
@@ -277,9 +278,7 @@ def main():
     conf = run_manager.load_conf()
 
     superseding_args = {
-        k: v
-        for (k, v) in vars(args).items()
-        if conf.get(k) != v and v is not None
+        k: v for (k, v) in vars(args).items() if conf.get(k) != v and v is not None
     }
 
     conf = conf | superseding_args
@@ -293,15 +292,11 @@ def main():
 
     init_gpus(conf)
 
-    sequencing_strategy = None
-    if conf.get("seq_strategy") == "fixed":
-        sequencing_strategy = FixedSequencingStrategy()
-    elif conf.get("seq_strategy") == "cluster":
-        sequencing_strategy = ClusterSequencingStrategy()
-    elif conf.get("seq_strategy") == "time":
-        sequencing_strategy = TimeWindowStrategy()
-    else:
-        raise ValueError()
+    sequencing_strategy = {
+        "fixed": FixedSequencingStrategy(),
+        "time": TimeWindowStrategy(),
+        "cluster": ClusterSequencingStrategy(),
+    }[conf.get("seq_strategy")]
 
     train = tf.data.Dataset.from_generator(
         SequenceGenerator(
@@ -383,92 +378,8 @@ def main():
 
     model = run_manager.load_weights(model)
 
-    # TODO demo should be refactored out or cleaned. it's too much in the way now
     if conf.get("demo"):
-        conf["eager"] = True
-        conf["tensorboard"] = True
-        conf["gpu"] = None
-        conf["distribute"] = False
-        conf["bs"] = 1
-
-        print(
-            f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
-            + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
-            + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
-        )
-        seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
-        seqs = (
-            test.unbatch()
-            .skip(seq_idx)
-            .shuffle(1000)
-            .take(5)
-            .as_numpy_iterator()
-        )
-        seqs = np.array([s for s in seqs], dtype=object)
-        for s in range(len(seqs)):
-            seq = seqs[s : s + 1]
-
-            # <--- Modify seq here
-            print(np.shape(seq))
-            print(seq.shape)
-            if s == 4:
-                seq[0, :, 1] = "<PAD>"
-            seq[0, 0, 1] = "download.cdn.mozilla.net"
-
-            mask = np.zeros_like(seq)
-            # <--- Modify mask here
-            # place 1's where you want to replace tokens with <MASK>
-            # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
-            # example: mask[0, 1, 1]
-            #   always zero ^  ^  ^
-            #     second token |  |
-            #                     | domain
-            # mask[0, 0, -1] = 1
-            # mask[0, 1, -1] = 1
-            # mask[0, 2, -1] = 1
-            masked_seq = np.where(
-                mask, np.full_like(seq, b"<MASK>", dtype=object), seq
-            )
-
-            pred, loss, in_fold_mask = model._predict(seq, mask)
-            print(f"Seq index: {seq_idx + s}")
-
-            if conf.get("finetune"):
-                pred = np.array(pred).flatten()
-                for p, _ in enumerate(pred):
-                    domain = seq[0, p, 1]
-                    label = seq[0, p, 2]
-
-                    print(
-                        f"{Fore.CYAN if in_fold_mask[0,p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
-                    )
-                print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
-            else:
-                pred = pred[0]
-
-                for i in range(len(pred)):
-                    # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
-                    masked_host = model.inverse_hosts_lookup(
-                        model.hosts_lookup(masked_seq[0, i, 0])
-                    )
-
-                    domain = model.inverse_domains_lookup(
-                        model.domains_lookup(seq[0, i, 1])
-                    )
-
-                    masked_domain = model.inverse_domains_lookup(
-                        model.domains_lookup(masked_seq[0, i, 1])
-                    )
-
-                    predicted_token = model.inverse_domains_lookup(
-                        np.array(pred).argmax(axis=-1)[i]
-                    )
-                    domain_index = model.domains_lookup(domain)
-                    print(
-                        f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
-                    )
-                print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
-
+        demo(model, conf, test)
         sys.exit(0)
 
     if conf.get("verbose"):
@@ -479,11 +390,10 @@ def main():
     train_steps_per_epoch = None
     test_steps_per_epoch = None
     for epoch in range(conf.get("epochs")):
-        pbar = tqdm(train, total=train_steps_per_epoch)
-
         # Training loop
         step = 0
         total_loss = 0.0
+        pbar = tqdm(train, total=train_steps_per_epoch)
         for x in pbar:
             step += 1
             total_loss += (
@@ -596,6 +506,84 @@ def main():
 
         # Save Metrics
         evaluation.save_metrics()
+
+
+def demo(model, conf, data):
+    conf["eager"] = True
+    conf["tensorboard"] = True
+    conf["gpu"] = None
+    conf["distribute"] = False
+    conf["bs"] = 1
+
+    print(
+        f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
+        + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
+        + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
+    )
+    seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
+    seqs = data.unbatch().skip(seq_idx).shuffle(1000).take(5).as_numpy_iterator()
+    seqs = np.array([s for s in seqs], dtype=object)
+    for s in range(len(seqs)):
+        seq = seqs[s : s + 1]
+
+        # <--- Modify seq here
+        print(np.shape(seq))
+        print(seq.shape)
+        if s == 4:
+            seq[0, :, 1] = "<PAD>"
+        seq[0, 0, 1] = "download.cdn.mozilla.net"
+
+        mask = np.zeros_like(seq)
+        # <--- Modify mask here
+        # place 1's where you want to replace tokens with <MASK>
+        # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
+        # example: mask[0, 1, 1]
+        #   always zero ^  ^  ^
+        #     second token |  |
+        #                     | domain
+        # mask[0, 0, -1] = 1
+        # mask[0, 1, -1] = 1
+        # mask[0, 2, -1] = 1
+        masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
+
+        pred, loss, in_fold_mask = model._predict(seq, mask)
+        print(f"Seq index: {seq_idx + s}")
+
+        if conf.get("finetune"):
+            pred = np.array(pred).flatten()
+            for p, _ in enumerate(pred):
+                domain = seq[0, p, 1]
+                label = seq[0, p, 2]
+
+                print(
+                    f"{Fore.CYAN if in_fold_mask[0,p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
+                )
+            print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
+        else:
+            pred = pred[0]
+
+            for i in range(len(pred)):
+                # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
+                masked_host = model.inverse_hosts_lookup(
+                    model.hosts_lookup(masked_seq[0, i, 0])
+                )
+
+                domain = model.inverse_domains_lookup(
+                    model.domains_lookup(seq[0, i, 1])
+                )
+
+                masked_domain = model.inverse_domains_lookup(
+                    model.domains_lookup(masked_seq[0, i, 1])
+                )
+
+                predicted_token = model.inverse_domains_lookup(
+                    np.array(pred).argmax(axis=-1)[i]
+                )
+                domain_index = model.domains_lookup(domain)
+                print(
+                    f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
+                )
+            print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
 
 
 if __name__ == "__main__":

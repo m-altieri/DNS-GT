@@ -1,6 +1,10 @@
-import gib_detection
+import os
+import sys
 from typing import Protocol
 from abc import abstractmethod
+
+sys.path.append(os.path.dirname(__file__))
+import gib_detection
 
 
 class Tokenizer(Protocol):
@@ -16,27 +20,34 @@ class Tokenizer(Protocol):
         raise NotImplementedError()
 
     def save_domain_vocabulary(self, path):
-        with open(path, "w") as f:
-            # add special tokens if they are missing. <UNK> is not added explicitly, it's handled by TF
-            if "<START>" not in self.domain_vocabulary:
-                self.domain_vocabulary.append("<START>")
-            if "<MASK>" not in self.domain_vocabulary:
-                self.domain_vocabulary.append("<MASK>")
-            if "<PAD>" not in self.domain_vocabulary:
-                self.domain_vocabulary.append("<PAD>")
+        # add special tokens if they are missing. <UNK> is not added explicitly, it's handled by TF
+        if "<START>" not in self.domain_vocabulary:
+            self.domain_vocabulary.append("<START>")
+        if "<MASK>" not in self.domain_vocabulary:
+            self.domain_vocabulary.append("<MASK>")
+        if "<PAD>" not in self.domain_vocabulary:
+            self.domain_vocabulary.append("<PAD>")
 
+        if not os.path.exists(os.path.dirname(path)):
+            print(os.path.dirname(path))
+            os.makedirs(os.path.dirname(path))
+
+        with open(path, "w") as f:
             f.write("\n".join(self.domain_vocabulary))
 
     def save_host_vocabulary(self, path):
-        with open(path, "w") as f:
-            # add special tokens if they are missing. <UNK> is not added explicitly, it's handled by TF
-            if "<START>" not in self.host_vocabulary:
-                self.host_vocabulary.append("<START>")
-            if "<MASK>" not in self.host_vocabulary:
-                self.host_vocabulary.append("<MASK>")
-            if "<PAD>" not in self.host_vocabulary:
-                self.host_vocabulary.append("<PAD>")
+        # add special tokens if they are missing. <UNK> is not added explicitly, it's handled by TF
+        if "<START>" not in self.host_vocabulary:
+            self.host_vocabulary.append("<START>")
+        if "<MASK>" not in self.host_vocabulary:
+            self.host_vocabulary.append("<MASK>")
+        if "<PAD>" not in self.host_vocabulary:
+            self.host_vocabulary.append("<PAD>")
 
+        if not os.path.exists(os.path.dirname(path)):
+            os.makedirs(os.path.dirname(path))
+
+        with open(path, "w") as f:
             f.write("\n".join(self.host_vocabulary))
 
     def load_domain_vocabulary(self, path):
@@ -81,7 +92,7 @@ class TrivialTokenizer(Tokenizer):
         self.host_vocabulary = []
 
     def fit(self, queries: list[(str, str)]):
-        for (host, domain) in queries:
+        for host, domain in queries:
             if domain not in self.domain_counts.keys():
                 self.domain_counts[domain] = 0
             self.domain_counts[domain] += 1
@@ -114,7 +125,7 @@ class SubdomainTokenizer(Tokenizer):
             self.processors.append(TokenReverser())
 
     def fit(self, queries: list[(str, str)]):
-        for (host, domain) in queries:
+        for host, domain in queries:
             tokens = domain.split(".")
             tokens = ["." + token for token in tokens]
             for processor in self.processors:

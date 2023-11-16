@@ -57,7 +57,8 @@ The process can take up to a few hours and the resulting folder is around 72 GiB
 - Preprocess csv files:
 
 ```
-src/preprocessing/process_tshark_csvs.py <DATA_PATH>
+cd </path/to/>DNS-GT/src/preprocessing
+python3 process_tshark_csvs.py <DATA_PATH>
 ```
 
 This will create a new `pcsv` folder in `<DATA_PATH>` with again 240 csv files, but a total size of just around 1.8 GiB, cleaning the DNS traffic and extracting only the useful information.
@@ -66,7 +67,8 @@ This will create a new `pcsv` folder in `<DATA_PATH>` with again 240 csv files, 
 - Create the vocabulary from the processed queries and convert the csv files into the final npy files:
 
 ```
-src/preprocessing/csv2npy.py <DATA_PATH>
+cd </path/to/>DNS-GT/src/preprocessing
+python3 csv2npy.py <DATA_PATH>
 ```
 
 This will create, at the same time, the vocabulary, and save it to `<VOCAB_PATH>` as a pair of two files, one for hosts and one for domains, and also the final query files in npy format. The vocabulary will be created in `<DATA_PATH>/vocab/`. The npy files will be created in `<DATA_PATH>/npy/`, and will be split automatically into a `train` folder containing the first 70% files, and a `test` folder containing the remaining 30% files.
@@ -81,7 +83,8 @@ mv </path/to/>DNS-GT/data/blacklists <DATA_PATH>
 Merge blacklists in a single file, for each category and quality:
 
 ```
-src/scripts/merge_blacklists.py <DATA_PATH>
+cd </path/to/>DNS-GT/src/scripts
+python3 merge_blacklists.py <DATA_PATH>
 ```
 
 This script will traverse the `blacklists` folder and merge the blacklists for each category and quality in a single filed called `blacklist.txt`, save in the respective directory.
@@ -90,26 +93,29 @@ This script will traverse the `blacklists` folder and merge the blacklists for e
 - Create labels for domains in the dictionary:
 
 ```
-src/scripts/label_domains.py <DATA_PATH>
+cd </path/to/>DNS-GT/src/scripts
+python3 label_domains.py <DATA_PATH>
 ```
 
 This script will create a `labels.csv` file in `<DATA_PATH>` containing domains names, and booleans (0 or 1) for their blacklisted status, for all blacklist categories (advertising, malicious, suspicious, tracking, other, and any) and quality (good and ok), for a total of 13 significative columns.
 
 - Create test folds
 As a last preprocessing step, it is required to create test folds for the downstream task.
-To do this:
+To do this, run:
+```
+cd </path/to/>DNS-GT/src/preprocessing
+python3 create_folds.py <DATA_PATH>
+```
 
 ### 4. Pretrain the Models
 
 - Configure the default training parameters in `</path/to/>DNS-GT/runs/default.yaml` with the correct paths.
 
 - Run the training:
-First move to the src folder:
-```
-cd </path/to/>DNS-GT/src
-```
+
 There are several parameters that can be customized. To start, run:
 ```
+cd </path/to/>DNS-GT/src
 python3 train.py --help
 ```
 Then start training the desired model with the desired parameters.

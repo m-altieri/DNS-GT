@@ -1,46 +1,52 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""Create test folds."""
+
 import os
+import argparse
 import numpy as np
 
-# Set constants
-PARTITIONS = 10  # number of different fold partitions
-FOLDS_PER_PARTITIONS = 5  # number of folds for each partition
+
+argparser = argparse.ArgumentParser()
+argparser.add_argument("path", help="Path to the main data folder.")
+argparser.add_argument(
+    "-p",
+    "--partitions",
+    default=10,
+    type=int,
+    help="Number of different fold partitions.",
+)
+argparser.add_argument(
+    "-f",
+    "--folds",
+    default=5,
+    type=int,
+    help="Number of test folds for each partition.",
+)
+args = argparser.parse_args()
 
 # Load domain
-with open(
-    "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt", "r"
-) as f:
+with open(os.path.join(args.path, "vocab", "domains_vocab.txt"), "r") as f:
     domains = f.read().splitlines()
 
 # Remove special domains
 domains = domains[:-3]
 
-
-for partition in range(PARTITIONS):
-
-    # Create folder for the current PARTITIONS
-    if not os.path.exists(
-        f"/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-{partition}"
-    ):
-        os.makedirs(
-            f"/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-{partition}"
-        )
+for partition in range(args.partitions):
+    # Create folder for the current partition
+    partition_path = os.path.join(args.path, "test_folds", f"partition-{partition}")
+    if not os.path.exists(partition_path):
+        os.makedirs(partition_path)
 
     # Randomly rearrange the domains to partition them in equally sized folds
     shuffled_domains = np.random.permutation(domains)
 
-    for fold in range(FOLDS_PER_PARTITIONS):
-
+    for fold in range(args.folds):
         # Slice the domains for the current fold
         in_fold = shuffled_domains[
-            len(domains)
-            // FOLDS_PER_PARTITIONS
-            * fold : len(domains)
-            // FOLDS_PER_PARTITIONS
-            * (fold + 1)
+            len(domains) // args.folds * fold : len(domains) // args.folds * (fold + 1)
         ]
 
         # Save current fold
-        np.save(
-            f"/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-{partition}/fold-{fold}.npy",
-            in_fold,
-        )
+        np.save(os.path.join(partition_path, f"fold-{fold}.npy"), in_fold)

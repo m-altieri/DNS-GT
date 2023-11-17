@@ -12,6 +12,8 @@ from colorama import Fore, Style
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
 
+tf.random.set_seed(42)
+
 from models import DELM, ParallelW2V
 
 from utils.data_loading import (

@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import tensorflow as tf
+
+tf.random.set_seed(42)
 from datetime import datetime
 
 from utils.nn import FF
@@ -56,9 +58,7 @@ class ParallelW2V(tf.keras.Model):
             M,
         )
         M = tf.where(
-            tf.math.equal(
-                tf.transpose(repeated_domain_indexes, [0, 2, 1]), pad_index
-            ),
+            tf.math.equal(tf.transpose(repeated_domain_indexes, [0, 2, 1]), pad_index),
             0,
             M,
         )
@@ -112,9 +112,7 @@ class ParallelW2V(tf.keras.Model):
                 or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
             )
         else:
-            self.tb_path = tf.summary.create_file_writer(
-                os.path.join(TB_FOLDER, "tmp")
-            )
+            self.tb_path = tf.summary.create_file_writer(os.path.join(TB_FOLDER, "tmp"))
         self.tb_writer = tf.summary.create_file_writer(self.tb_path)
 
         # <--- this is the same as DELM; make it external?
@@ -138,7 +136,6 @@ class ParallelW2V(tf.keras.Model):
         )
         # --->
 
-
         # Layers
         self.ndomains = self.domain_lookup.vocabulary_size()
         self.domain_embeddings = tf.keras.layers.Embedding(
@@ -160,9 +157,7 @@ class ParallelW2V(tf.keras.Model):
 
         if self.conf["type"] == "CBOW":
             M = self.compute_M(domain_indexes)  # [B, L, L]
-            C = tf.linalg.matmul(
-                tf.cast(M, tf.float32), domain_embs
-            )  # [B, L, dim]
+            C = tf.linalg.matmul(tf.cast(M, tf.float32), domain_embs)  # [B, L, dim]
 
         else:
             C = domain_embs  # [B, L, dim]
@@ -185,16 +180,12 @@ class ParallelW2V(tf.keras.Model):
     @tf.function
     def distributed_train_step(self, seq):
         loss = self.dist_strategy.run(self.train_step, args=(seq,))
-        return self.dist_strategy.reduce(
-            tf.distribute.ReduceOp.SUM, loss, axis=None
-        )
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
     @tf.function
     def distributed_test_step(self, seq):
         loss = self.dist_strategy.run(self.test_step, args=(seq,))
-        return self.dist_strategy.reduce(
-            tf.distribute.ReduceOp.SUM, loss, axis=None
-        )
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
     def train_step(self, seq):
         # seq: [B,L,2], or [B,L,3] if --ft
@@ -220,12 +211,8 @@ class ParallelW2V(tf.keras.Model):
                     # CBOW Pretraining
                     M = self.compute_M(domain_indexes)
 
-                    nonpad_tokens = tf.math.reduce_any(
-                        tf.cast(M, tf.bool), axis=-1
-                    )
-                    domain_indexes = tf.boolean_mask(
-                        domain_indexes, nonpad_tokens
-                    )
+                    nonpad_tokens = tf.math.reduce_any(tf.cast(M, tf.bool), axis=-1)
+                    domain_indexes = tf.boolean_mask(domain_indexes, nonpad_tokens)
                     pred = tf.boolean_mask(pred, nonpad_tokens)
 
                     loss = self.compiled_loss(
@@ -279,9 +266,7 @@ class ParallelW2V(tf.keras.Model):
                     # Set <PAD> rows (predictions) in M to 0
                     M = tf.where(
                         tf.math.equal(
-                            tf.transpose(
-                                repeated_domain_indexes, perm=[0, 2, 1]
-                            ),
+                            tf.transpose(repeated_domain_indexes, perm=[0, 2, 1]),
                             pad_index,
                         ),
                         0,
@@ -323,9 +308,7 @@ class ParallelW2V(tf.keras.Model):
                     M = tf.cast(M, dtype=tf.int16)
 
                     # compute how many context tokens are to be considered for each target token
-                    per_token_context_cardinality = tf.reduce_sum(
-                        M, axis=-1
-                    )  # [B,L]
+                    per_token_context_cardinality = tf.reduce_sum(M, axis=-1)  # [B,L]
 
                     # flatten the per-token context cardinality: [B*L]
                     per_token_context_cardinality = tf.reshape(
@@ -377,9 +360,7 @@ class ParallelW2V(tf.keras.Model):
         # Write training loss to TensorBoard
         if self.conf.get("tensorboard"):
             with self.tb_writer.as_default():
-                tf.summary.scalar(
-                    "train_loss", loss, step=self.train_step_count
-                )
+                tf.summary.scalar("train_loss", loss, step=self.train_step_count)
 
         # Compute gradients and update weights, ignoring warnings about None gradients
         trainable_variables = self.trainable_variables
@@ -481,9 +462,7 @@ class ParallelW2V(tf.keras.Model):
                     M,
                 )
                 # Also set <PAD> columns (context domains) in M to 0
-                M = tf.where(
-                    tf.math.equal(repeated_domain_indexes, pad_index), 0, M
-                )
+                M = tf.where(tf.math.equal(repeated_domain_indexes, pad_index), 0, M)
 
                 # Take (repeated) context indexes that are in M
                 context_indexes = tf.boolean_mask(
@@ -516,9 +495,7 @@ class ParallelW2V(tf.keras.Model):
                 M = tf.cast(M, dtype=tf.int16)
 
                 # compute how many context tokens are to be considered for each target token
-                per_token_context_cardinality = tf.reduce_sum(
-                    M, axis=-1
-                )  # [B,L]
+                per_token_context_cardinality = tf.reduce_sum(M, axis=-1)  # [B,L]
 
                 # flatten the per-token context cardinality: [B*L]
                 per_token_context_cardinality = tf.reshape(

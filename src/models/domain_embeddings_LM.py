@@ -2,6 +2,8 @@ import os
 import datetime
 import numpy as np
 import tensorflow as tf
+
+tf.random.set_seed(42)
 from lib.tf_matplotlib import tfmpl
 
 from utils.nn import FF
@@ -31,9 +33,7 @@ class DELM(tf.keras.Model):
         )
 
     @tf.function
-    def mask(
-        self, hosts, domains, mask_p, same_p, random_p, prevent_masking=False
-    ):
+    def mask(self, hosts, domains, mask_p, same_p, random_p, prevent_masking=False):
         tf.debugging.assert_equal(tf.shape(hosts), tf.shape(domains))
 
         # Randomly decide the tokens to mask for the current batch
@@ -66,9 +66,7 @@ class DELM(tf.keras.Model):
         # [UNK] is still updated, as well as <PAD>, and they shouldn't be according to the current code
 
         # Create masks of <MASK>, unchanged and random tokens
-        all_mask_tokens = tf.fill(
-            dims=tf.shape(domains), value=b"<MASK>"
-        )  # [B,L]
+        all_mask_tokens = tf.fill(dims=tf.shape(domains), value=b"<MASK>")  # [B,L]
         all_same_host_tokens = tf.identity(hosts)  # [B,L]
         all_same_domain_tokens = tf.identity(domains)  # [B,L]
         all_random_host_tokens = tf.random.uniform(
@@ -77,18 +75,14 @@ class DELM(tf.keras.Model):
             maxval=self.hosts_lookup.vocabulary_size(),
             dtype=tf.dtypes.int64,
         )  # [B,L]
-        all_random_host_tokens = self.inverse_hosts_lookup(
-            all_random_host_tokens
-        )
+        all_random_host_tokens = self.inverse_hosts_lookup(all_random_host_tokens)
         all_random_domain_tokens = tf.random.uniform(
             shape=tf.shape(domains),
             minval=0,
             maxval=self.domains_lookup.vocabulary_size(),
             dtype=tf.dtypes.int64,
         )  # [B,L]
-        all_random_domain_tokens = self.inverse_domains_lookup(
-            all_random_domain_tokens
-        )
+        all_random_domain_tokens = self.inverse_domains_lookup(all_random_domain_tokens)
 
         # Replace the predefined % of tokens with the correct mask
         masked_hosts = tf.where(
@@ -179,9 +173,9 @@ class DELM(tf.keras.Model):
         scatter_array[:, 0] /= len(a)
 
         # normalize embedding  values between 0 and 1
-        scatter_array[:, 1] = (
-            scatter_array[:, 1] - np.min(scatter_array[:, 1])
-        ) / (np.max(scatter_array[:, 1]) - np.min(scatter_array[:, 1]))
+        scatter_array[:, 1] = (scatter_array[:, 1] - np.min(scatter_array[:, 1])) / (
+            np.max(scatter_array[:, 1]) - np.min(scatter_array[:, 1])
+        )
 
         if verbose:
             print(scatter_array)
@@ -236,9 +230,7 @@ class DELM(tf.keras.Model):
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
         self.tb_writer = (
             tf.summary.create_file_writer(self.tb_path)
-            if self.conf["quick_tb"]
-            or self.conf["tensorboard"]
-            or self.conf["verbose"]
+            if self.conf["quick_tb"] or self.conf["tensorboard"] or self.conf["verbose"]
             else None
         )
 
@@ -269,9 +261,7 @@ class DELM(tf.keras.Model):
         # NOTE if max_tokens, I am trimming both hosts and domains to max_tokens;
         # in theory hosts are a lot less problematic and could be left untrimmed
         if self.conf.get("max_tokens"):
-            self.hosts_vocabulary = self.hosts_vocabulary[
-                : self.conf.get("max_tokens")
-            ]
+            self.hosts_vocabulary = self.hosts_vocabulary[: self.conf.get("max_tokens")]
             self.domains_vocabulary = self.domains_vocabulary[
                 : self.conf.get("max_tokens")
             ]
@@ -371,9 +361,7 @@ class DELM(tf.keras.Model):
             tf.constant(0, dtype=tf.int64),
         ):
             # Retrieve embeddings
-            pad_emb = self.domain_embeddings(
-                self.domains_lookup(tf.constant(b"<PAD>"))
-            )
+            pad_emb = self.domain_embeddings(self.domains_lookup(tf.constant(b"<PAD>")))
             unk_emb = self.domain_embeddings(
                 self.domains_lookup(
                     tf.constant(
@@ -512,16 +500,12 @@ class DELM(tf.keras.Model):
     @tf.function
     def distributed_train_step(self, seq):
         loss = self.dist_strategy.run(self.train_step, args=(seq,))
-        return self.dist_strategy.reduce(
-            tf.distribute.ReduceOp.SUM, loss, axis=None
-        )
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
     @tf.function
     def distributed_test_step(self, seq):
         loss = self.dist_strategy.run(self.test_step, args=(seq,))
-        return self.dist_strategy.reduce(
-            tf.distribute.ReduceOp.SUM, loss, axis=None
-        )
+        return self.dist_strategy.reduce(tf.distribute.ReduceOp.SUM, loss, axis=None)
 
     def train_step(self, seq):
         if self.finetuning:
@@ -713,9 +697,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
     def minmax_norm(self, tensor):
         return tf.divide(
             tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
-            tf.math.subtract(
-                tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)
-            ),
+            tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
         )
 
     def __init__(self, n_heads, emb_dim, **kwargs):
@@ -736,26 +718,18 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Query, Key and Value matrices (multi-head)
         self.Wq = [
-            tf.keras.layers.Dense(
-                self.head_dim, name=f"MHGAT{self.block_id}-Wq/h{i}"
-            )
+            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wq/h{i}")
             for i in range(self.n_heads)
         ]
         self.Wk = [
-            tf.keras.layers.Dense(
-                self.head_dim, name=f"MHGAT{self.block_id}-Wk/h{i}"
-            )
+            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wk/h{i}")
             for i in range(self.n_heads)
         ]
         self.Wv = [
-            tf.keras.layers.Dense(
-                self.head_dim, name=f"MHGAT{self.block_id}-Wv/h{i}"
-            )
+            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wv/h{i}")
             for i in range(self.n_heads)
         ]
-        self.Wo = tf.keras.layers.Dense(
-            self.emb_dim, name=f"MHGAT{self.block_id}-Wo"
-        )
+        self.Wo = tf.keras.layers.Dense(self.emb_dim, name=f"MHGAT{self.block_id}-Wo")
 
         # Softmax
         self.softmax = tf.keras.layers.Softmax()
@@ -822,9 +796,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # --->
 
         # Calculate softmax masking disconnected scores
-        scores = self.softmax(
-            scores, mask=adj
-        )  # [B, n_heads, L, L] attention weights
+        scores = self.softmax(scores, mask=adj)  # [B, n_heads, L, L] attention weights
 
         if self.tb_writer and self.step % 100 == 0:
             self.tb_log_image(
@@ -951,19 +923,13 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
             commons, self.duplicate_axis(padding_mask, from_axis=1, to_axis=2)
         )  # [B,L,L,maxlen]
 
-        commons = tf.math.reduce_sum(
-            tf.cast(commons, tf.int32), axis=-1
-        )  # [B,L,L]
+        commons = tf.math.reduce_sum(tf.cast(commons, tf.int32), axis=-1)  # [B,L,L]
 
         # For each pair of domains (d_i, d_j), calculate the number of subdomains
         # of the one that has fewer between d_i and d_j
         pairwise_shorter = tf.math.logical_and(
-            self.duplicate_axis(
-                padding_mask, from_axis=1, to_axis=2, order="C"
-            ),
-            self.duplicate_axis(
-                padding_mask, from_axis=1, to_axis=2, order="F"
-            ),
+            self.duplicate_axis(padding_mask, from_axis=1, to_axis=2, order="C"),
+            self.duplicate_axis(padding_mask, from_axis=1, to_axis=2, order="F"),
         )  # [B,L,L,maxlen]
         pairwise_shorter = tf.math.reduce_sum(
             tf.cast(pairwise_shorter, dtype=tf.int32), axis=-1
@@ -1045,9 +1011,7 @@ class AdjacencyEstimator(tf.keras.layers.Layer):
 
     def call(self, inputs):
         # inputs [B,L]
-        hierarchical_similarity = self.hierarchical_similarity(
-            inputs, step=self.step
-        )
+        hierarchical_similarity = self.hierarchical_similarity(inputs, step=self.step)
 
         adj = self.construct_adjacency(
             hierarchical_similarity, self.type, self.threshold

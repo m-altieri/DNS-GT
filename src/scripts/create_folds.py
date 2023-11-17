@@ -33,6 +33,8 @@ with open(os.path.join(args.path, "vocab", "domains_vocab.txt"), "r") as f:
 # Remove special domains
 domains = domains[:-3]
 
+rng = np.random.default_rng(seed=42)
+
 for partition in range(args.partitions):
     # Create folder for the current partition
     partition_path = os.path.join(args.path, "test_folds", f"partition-{partition}")
@@ -40,7 +42,7 @@ for partition in range(args.partitions):
         os.makedirs(partition_path)
 
     # Randomly rearrange the domains to partition them in equally sized folds
-    shuffled_domains = np.random.permutation(domains)
+    shuffled_domains = rng.permutation(domains)
 
     for fold in range(args.folds):
         # Slice the domains for the current fold

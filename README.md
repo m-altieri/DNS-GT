@@ -29,17 +29,16 @@ python3 -m pip install -r requirements.txt
 It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
 The total size of the dataset should be around 113 GiB.
 
-- The blacklists can be downloaded from `https://firebog.net`.
-
-To replicate our experiments: download all lists except the ones that have a ~~strikethrough~~. 
-Then, create a folder named `blacklists`, with 5 subfolders `advertising`, `malicious`, `other`, `suspicious` and `tracking`. 
-Each of these subfolders has in turn two subfolders `good` and `ok`. 
-Place in each category the respective lists as downloaded from the provided URL, placing the checkmarked ones in green into `good` and the others into `ok`.
+- Download the blacklists with:
+```
+bash src/scripts/download_blacklists.sh <DATA_PATH>
+```
+They will be downloaded from `https://firebog.net` and automatically organized in different folders depending on their category (`advertising`, `malicious`, `other`, `suspicious` and `tracking`) and quality (`good` and `ok`).
 
 
 ### 2. Get the Code
 
-Clone the repository containing the necessary code and scripts: // update link with github:
+Clone the repository containing the necessary code and scripts:
 ```
 git clone https://github.com/m-altieri/DNS-GT.git
 ```
@@ -87,14 +86,14 @@ Move the blacklists to the same path as the other data, to have all data-related
 mv </path/to/>DNS-GT/data/blacklists <DATA_PATH>
 ```
 
-Then. merge blacklists in a single file, for each category and quality:
+Then, merge blacklists in a single file, for each category and quality:
 
 ```
 cd </path/to/>DNS-GT/src/scripts
 python3 merge_blacklists.py <DATA_PATH>
 ```
 
-This script will browse the `blacklists` folder and merge the blacklists for each category and quality in a single filed called `blacklist.txt`, save in the respective directory.
+This script will browse the `blacklists` folder and merge the blacklists for each category and quality in a single filed called `blacklist.txt`, saved in the respective directory.
 
 
 - Create labels for domains in the dictionary:

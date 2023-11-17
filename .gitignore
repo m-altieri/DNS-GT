@@ -9,8 +9,6 @@ embeddings/*
 checkpoints/*
 src/__pycache__/
 src/models/__pycache__/
-src/scripts/*
-!src/scripts/*.py
 src/visualizations/*
 !src/visualizations/*.py
 predictions/*

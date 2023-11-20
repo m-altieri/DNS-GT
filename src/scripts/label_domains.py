@@ -90,7 +90,6 @@ df = pd.DataFrame(
 )
 df.insert(0, "domain", domains)
 df = df.fillna(0)
-print(df.head(5))
 
 print("Creating domain labels...")
 
@@ -129,9 +128,9 @@ for i in tqdm(range(df["domain"].str.split(".").str.len().max())):
     df["other", "ok"] = df["other", "ok"].where(
         ~subdomains.isin(blacklists["other_ok"]), 1
     )
-    subdomains = subdomains.str.partition(".")[
-        2
-    ]  # strip the bottom level from domain name
+
+    # strip the bottom level from domain name
+    subdomains = subdomains.str.partition(".")[2]
 
 df["any", "good"] = df["any", "good"].where(
     (df["advertising", "good"] == 0)
@@ -150,5 +149,11 @@ df["any", "ok"] = df["any", "ok"].where(
     1,
 )
 
-print(df)
-df.to_csv(os.path.join(args.path, "labels.csv"))
+print(
+    f'Labels created. Found {len(df[df["any", "ok"] == 1])}/{len(df)} domains with at least a positive label.'
+)
+
+print("Saving labels...")
+save_path = os.path.join(args.path, "labels.csv")
+df.to_csv(save_path)
+print(f"Labels saved to {save_path}.")

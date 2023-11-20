@@ -58,7 +58,7 @@ class SequenceGenerator:
         Keyword args:
             stride (int): if strategy is "fixed", by how many queries to shift after each sequence.
             include_start (bool): Deprecated. whether to include a <START> token at the beginning of the sequence.
-            model (str): model to use. Either "delm" or "w2v".
+            model (str): model to use. Either "dns_gt" or "w2v".
             vocab (str): domains vocabulary. Only used in finetuning.
             tiny_amount (bool): Deprecated. Whether to use a small number of queries for debugging purposes.
             verbose (bool): whether to print additional debugging info.

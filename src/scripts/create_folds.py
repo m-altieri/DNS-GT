@@ -11,6 +11,13 @@ import numpy as np
 argparser = argparse.ArgumentParser()
 argparser.add_argument("path", help="Path to the main data folder.")
 argparser.add_argument(
+    "-s",
+    "--seed",
+    default=42,
+    type=int,
+    help="Seed for the Random Number Generator.",
+)
+argparser.add_argument(
     "-p",
     "--partitions",
     default=10,
@@ -33,7 +40,7 @@ with open(os.path.join(args.path, "vocab", "domains_vocab.txt"), "r") as f:
 # Remove special domains
 domains = domains[:-3]
 
-rng = np.random.default_rng(seed=42)
+rng = np.random.default_rng(seed=args.seed)
 
 for partition in range(args.partitions):
     # Create folder for the current partition
@@ -52,3 +59,5 @@ for partition in range(args.partitions):
 
         # Save current fold
         np.save(os.path.join(partition_path, f"fold-{fold}.npy"), in_fold)
+
+print("Test folds created.")

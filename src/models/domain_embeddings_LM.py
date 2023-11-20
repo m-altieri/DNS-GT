@@ -10,7 +10,7 @@ from utils.nn import FF
 from utils.distribute import DummyStrategy
 
 
-class DELM(tf.keras.Model):
+class DNS_GT(tf.keras.Model):
     def get_config(self):
         return self.conf
 
@@ -833,7 +833,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         if self.tb_writer and self.step % 100 == 0:
             # Visualize the first word of the first sequence as it evolves through blocks
             with self.tb_writer.as_default():
-                result_image = DELM.draw_scatter(
+                result_image = DNS_GT.draw_scatter(
                     tf.identity(result[0, 0])
                 )  # [emb_dim] -> [1, h, w, 3]
                 tf.summary.image(

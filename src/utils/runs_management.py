@@ -12,7 +12,7 @@ class RunManager:
     project_root/
     ├── src/
     └── runs/
-        ├── DELM/
+        ├── DNS-GT/
         │   ├── <run_name_1>/
         │   │   ├── weights.h5
         │   │   ├── embeddings.npy

@@ -1,2 +1,2 @@
-from models.domain_embeddings_LM import DELM
-from models.word2vec import ParallelW2V
+from models.domain_embeddings_LM import DNS_GT
+from models.word2vec import W2V

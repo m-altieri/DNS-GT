@@ -14,7 +14,7 @@ import tensorflow as tf
 
 tf.random.set_seed(42)
 
-from models import DELM, ParallelW2V
+from models import DNS_GT, W2V
 
 from utils.data_loading import (
     SequenceGenerator,
@@ -30,7 +30,7 @@ from utils.runs_management import RunManager
 
 def parse_args():
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("model", action="store", default="DELM")
+    argparser.add_argument("model", action="store", default="DNS-GT")
     argparser.add_argument(
         "--es",
         action="store_true",
@@ -248,10 +248,10 @@ def build_model(model, conf, dist_strategy):
             from_logits=False, reduction=loss_reduction
         )
     with dist_strategy.scope():
-        if model.lower() == "delm":
-            model = DELM(conf, dist_strategy)
-        elif model.lower() == "parallelw2v":
-            model = ParallelW2V(conf, dist_strategy)
+        if model.lower() == "dns-gt":
+            model = DNS_GT(conf, dist_strategy)
+        elif model.lower() == "w2v":
+            model = W2V(conf, dist_strategy)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
             loss=loss,
@@ -453,7 +453,7 @@ def main():
             step = 0
             pbar = tqdm(test)
             for x in pbar:
-                # DELM: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
+                # DNS-GT: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
 
                 # Compute predictions on x
                 domains = x[..., 1]

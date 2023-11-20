@@ -4,3 +4,4 @@ hosts_vocab_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/host_vocab.txt"
 test_folds_path: "/mnt/storage15/TI-2016/npy/tokenized/trivial/folds"
 bs: 256
 lr: 0.0001
+

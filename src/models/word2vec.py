@@ -9,7 +9,7 @@ from utils.nn import FF
 from utils.distribute import DummyStrategy
 
 
-class ParallelW2V(tf.keras.Model):
+class W2V(tf.keras.Model):
     def pretrain(self):
         self.domain_embeddings.trainable = True
         self.out.trainable = True

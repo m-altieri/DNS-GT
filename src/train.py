@@ -252,6 +252,8 @@ def build_model(model, conf, dist_strategy):
             model = DNS_GT(conf, dist_strategy)
         elif model.lower() == "w2v":
             model = W2V(conf, dist_strategy)
+        else:
+            raise ValueError("Model name is not valid. Use DNS-GT or W2V.")
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=conf.get("lr")),
             loss=loss,

@@ -126,7 +126,7 @@ Each model has a default parameter configuration, that can be seen in `</path/to
 
 Start training with, for instance:
 ```
-python3 train.py DELM -r first_run --seq-strategy cluster
+python3 train.py DNS-GT -r first_run --seq-strategy cluster
 ```
 The model weights, embeddings and configuration will be saved in the `runs` folder.
  
@@ -137,12 +137,12 @@ The model weights, embeddings and configuration will be saved in the `runs` fold
 
 After a model is pretrained (and its weights are available in the `runs` folder), it can be finetuned in an end-to-end way with the `--ft` or `--finetune` flag. For instance:
 ```
-python3 train.py DELM -r first_run --ft
+python3 train.py DNS-GT -r first_run --ft
 ```
 
 Afterwards, get predictions on the downstream task:
 ```
-python3 train.py DELM -r first_run --evaluate
+python3 train.py DNS-GT -r first_run --evaluate
 ```
 
 - Alternatively, use the pretrained embeddings to train external classifiers

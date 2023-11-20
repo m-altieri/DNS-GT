@@ -63,6 +63,7 @@ python3 process_tshark_csvs.py <DATA_PATH>
 ```
 
 This will create a new `pcsv` folder in `<DATA_PATH>` with 240 csv files, but a total size of just around 1.8 GiB, cleaning the DNS traffic and extracting only the useful information.
+The process can take up to 2 hours, and the resulting folder is around 72 GiB in size.
 
 
 - Create the vocabulary from the processed queries and convert the csv files into the final npy files:
@@ -105,7 +106,7 @@ This script will create a `labels.csv` file in `<DATA_PATH>` containing domains 
 
 As a last preprocessing step, it is required to create test folds for the downstream task:
 ```
-cd </path/to/>DNS-GT/src/preprocessing
+cd </path/to/>DNS-GT/src/scripts
 python3 create_folds.py <DATA_PATH>
 ```
 

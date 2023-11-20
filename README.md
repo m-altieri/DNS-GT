@@ -23,7 +23,14 @@ python3 -m pip install -r requirements.txt
 
 ## Usage
 
-### 1. Get the Data
+### 1. Get the Code
+
+Clone the repository containing the necessary code and scripts:
+```
+git clone https://github.com/m-altieri/DNS-GT.git
+```
+
+### 2. Get the Data
 
 - Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset and save it in `<DATA_PATH>`.
 It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
@@ -34,15 +41,6 @@ The total size of the dataset should be around 113 GiB.
 bash src/scripts/download_blacklists.sh <DATA_PATH>
 ```
 They will be downloaded from `https://firebog.net` and automatically organized in different folders depending on their category (`advertising`, `malicious`, `other`, `suspicious` and `tracking`) and quality (`good` and `ok`).
-
-
-### 2. Get the Code
-
-Clone the repository containing the necessary code and scripts:
-```
-git clone https://github.com/m-altieri/DNS-GT.git
-```
-
 
 ### 3. Data Preprocessing
 
@@ -70,7 +68,6 @@ This will create a new `pcsv` folder in `<DATA_PATH>` with 240 csv files, but a 
 - Create the vocabulary from the processed queries and convert the csv files into the final npy files:
 
 ```
-cd </path/to/>DNS-GT/src/preprocessing
 python3 csv2npy.py <DATA_PATH>
 ```
 
@@ -99,7 +96,6 @@ This script will browse the `blacklists` folder and merge the blacklists for eac
 - Create labels for domains in the dictionary:
 
 ```
-cd </path/to/>DNS-GT/src/scripts
 python3 label_domains.py <DATA_PATH>
 ```
 

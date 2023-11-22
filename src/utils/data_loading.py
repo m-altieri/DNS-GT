@@ -312,7 +312,14 @@ class ClusterSequencingStrategy:
             The previous default was `lambda deltas: np.mean(deltas) + 3 * np.std(deltas)`.
         """
         deltas = queries[1:, 2] - queries[:-1, 2]
-        dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, 2], -1))
+        try:
+            dbscan = DBSCAN(eps=eps(deltas)).fit(np.expand_dims(queries[:, 2], -1))
+        except IndexError:
+            print(
+                f"[WARN] Found a host with a single query: {queries}. Returning [-1]."
+            )
+            return [-1]
+
         return dbscan.labels_
 
 

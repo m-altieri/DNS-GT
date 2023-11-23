@@ -1,8 +1,4 @@
-data_path: "/mnt/storage15/tmp_env"
-queries_path: "npy"
-domains_vocab_path: "vocab/domains_vocab.txt"
-hosts_vocab_path: "vocab/hosts_vocab.txt"
-test_folds_path: "test_folds"
+data_path: ""
 bs: 256
 lr: 0.0001
 

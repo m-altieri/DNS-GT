@@ -20,10 +20,6 @@ argparser = argparse.ArgumentParser()
 argparser.add_argument(
     "path", help="Path to the folder containing the preprocessed CSV files."
 )
-# argparser.add_argument(
-#     "--queries-folder",
-#     default="/mnt/storage15/TI-2016-preprocessed/arrays/all/queries/train",
-# )
 argparser.add_argument(
     "output_folder",
     help="Path of the folder where the vocabulary will be saved. Note that, in that folder, two files will be created.",

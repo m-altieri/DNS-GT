@@ -1,7 +1,11 @@
+import os
+import argparse
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+from utils.runs_management import RunManager
 
 
 def eucl_dist(a, b):
@@ -12,10 +16,18 @@ def cos_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
+argparser = argparse.ArgumentParser()
+argparser.add_argument("model")
+argparser.add_argument("run")
+args = argparser.parse_args()
+
+root_conf = RunManager.load_root_conf()
+data_path = root_conf.get("data_path")
+
 # Load
-embeddings_path = "../../runs/DELM/DELM-L32-ft-fold0/embeddings.npy"
+embeddings_path = f"../../runs/{args.model}/{args.run}/embeddings.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
+domains_path = os.path.join(data_path, "vocab", "domains_vocab.txt")
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
@@ -95,9 +107,7 @@ print(common_domains)
 # ]
 
 common_emb = embeddings[[np.where(domains == d)[0][0] for d in common_domains]]
-malicious_emb = embeddings[
-    [np.where(domains == d)[0][0] for d in malicious_domains]
-]
+malicious_emb = embeddings[[np.where(domains == d)[0][0] for d in malicious_domains]]
 
 avg_cc_eucl_dist = np.zeros((len(common_emb)))
 avg_cm_eucl_dist = np.zeros((len(common_emb)))

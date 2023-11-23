@@ -27,8 +27,7 @@ from pyod.models.suod import SUOD
 from pyod.models.copod import COPOD
 
 from utils.evaluation import Evaluation
-
-# os.environ["OPENBLAS_NUM_THREADS"] = "1"
+from utils.runs_management import RunManager
 
 
 def parse_args():
@@ -121,8 +120,11 @@ def main():
         ]
     )
 
+    root_conf = RunManager.load_root_conf()
+    data_path = root_conf.get("data_path")
+
     # Load vocabulary
-    vocab_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
+    vocab_path = os.path.join(data_path, "vocab", "domains_vocab.txt")
     with open(vocab_path, "r") as f:
         vocab = [l.strip() for l in f.readlines()]
 
@@ -179,7 +181,7 @@ def main():
 
     # Load test fold
     test_domains = np.load(
-        "/mnt/storage15/TI-2016/npy/tokenized/trivial/folds/partition-0/fold-0.npy"
+        os.path.join(data_path, "test_folds", "partition-0", "fold-0.npy")
     )
     test_indexes = np.sort(np.where(np.expand_dims(test_domains, axis=-1) == vocab)[1])
 

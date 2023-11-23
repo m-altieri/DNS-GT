@@ -243,7 +243,8 @@ class DNS_GT(tf.keras.Model):
         if self.conf.get("test_fold") is not None:
             fold = np.load(
                 os.path.join(
-                    self.conf.get("test_folds_path"),
+                    self.conf.get("data_path"),
+                    "test_folds",
                     f"partition-{self.conf.get('test_partition')}",
                     f"fold-{self.conf.get('test_fold')}.npy",
                 )
@@ -252,10 +253,20 @@ class DNS_GT(tf.keras.Model):
 
         # Load vocabularies
         self.hosts_vocabulary = (
-            open(self.conf.get("hosts_vocab_path"), "r").read().split("\n")
+            open(
+                os.path.join(self.conf.get("data_path"), "vocab", "hosts_vocab.txt"),
+                "r",
+            )
+            .read()
+            .split("\n")
         )
         self.domains_vocabulary = (
-            open(self.conf.get("domains_vocab_path"), "r").read().split("\n")
+            open(
+                os.path.join(self.conf.get("data_path"), "vocab", "domains_vocab.txt"),
+                "r",
+            )
+            .read()
+            .split("\n")
         )
 
         # NOTE if max_tokens, I am trimming both hosts and domains to max_tokens;

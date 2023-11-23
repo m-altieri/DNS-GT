@@ -7,7 +7,7 @@ from data_loader import *
 
 Set the queries folder
 ```
-queries_folder = "/mnt/storage15/TI-2016/npy/tokenized/trivial/train"
+queries_folder = "<DATA_PATH>/npy/train"
 ```
 
 Choose a strategy. for now, fixed and cluster are supported

@@ -1,3 +1,4 @@
+import os
 import yaml
 import logging
 import tensorflow as tf
@@ -26,10 +27,22 @@ class TDELM(tf.keras.Model):
 
         # Vocabularies
         self.hosts_vocabulary = (
-            open(self.conf.get("hosts_vocab_path"), "r").read().split("\n")
+            open(
+                os.path.join(self.conf.get("data_path"), "vocab", "hosts_vocab.txt"),
+                "r",
+            )
+            .read()
+            .split("\n")
         )
         self.subdomains_vocabulary = (
-            open(self.conf.get("subdomains_vocab_path"), "r").read().split("\n")
+            open(
+                os.path.join(
+                    self.conf.get("data_path"), "vocab", "subdomains_vocab.txt"
+                ),
+                "r",
+            )
+            .read()
+            .split("\n")
         )
         self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
         self.subdomains_vocabulary = tf.constant(self.subdomains_vocabulary)

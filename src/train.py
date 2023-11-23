@@ -304,7 +304,7 @@ def main():
 
     train = tf.data.Dataset.from_generator(
         SequenceGenerator(
-            os.path.join(conf.get("queries_path"), "train"),
+            os.path.join(conf.get("data_path"), "npy", "train"),
             sequencing_strategy,
             conf.get("seqlen"),
             conf.get("finetune"),
@@ -319,7 +319,7 @@ def main():
     )
     test = tf.data.Dataset.from_generator(
         SequenceGenerator(
-            os.path.join(conf.get("queries_path"), "test"),
+            os.path.join(conf.get("data_path"), "npy", "test"),
             sequencing_strategy,
             conf.get("seqlen"),
             conf.get("finetune"),

@@ -1,6 +1,8 @@
 import os
 
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+import argparse
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -8,6 +10,8 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+
+from utils.runs_management import RunManager
 
 
 def eucl_dist(a, b):
@@ -18,10 +22,18 @@ def cos_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
+argparser = argparse.ArgumentParser()
+argparser.add_argument("model")
+argparser.add_argument("run")
+args = argparser.parse_args()
+
+root_conf = RunManager.load_root_conf()
+data_path = root_conf.get("data_path")
+
 # Load
-embeddings_path = "../../runs/DELM/DELM-good/embeddings.npy"
+embeddings_path = f"../../runs/{args.model}/{args.run}/embeddings.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
+domains_path = os.path.join(data_path, "vocab", "domains_vocab.txt")
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
@@ -47,9 +59,7 @@ if True:
 if False:
     stratified_samples_idx = np.zeros((k, samples_per_cluster), dtype=int)
     for c in range(k):
-        centroids[c] = np.mean(
-            embeddings[np.where(cluster_mapping == c)[0]], axis=0
-        )
+        centroids[c] = np.mean(embeddings[np.where(cluster_mapping == c)[0]], axis=0)
         medoids_idx[c] = np.array(
             [eucl_dist(e, centroids[c]) for e in embeddings]
         ).argmin()  # Most similar embedding to centroid c
@@ -108,9 +118,9 @@ if False:
     top_nn = 10
     distances = np.zeros((20, 20))
     for i, mal_index in enumerate(malicious_idx):
-        mal_nn = np.argsort(
-            [eucl_dist(embeddings[mal_index], e) for e in embeddings]
-        )[:top_nn]
+        mal_nn = np.argsort([eucl_dist(embeddings[mal_index], e) for e in embeddings])[
+            :top_nn
+        ]
         # for j, med_index in enumerate(medoids_idx):
         for j, med_index in enumerate(np.where(domains == "www.google.com")[0]):
             gen_nn = np.argsort(
@@ -131,9 +141,7 @@ if False:
             plt.cla()
             sns.heatmap(distances)
             plt.savefig(f"heatmaps/heatmap-{i}-{j}.png")
-            print(
-                f"Saved heatmap for {domains[mal_index]} and {domains[med_index]}"
-            )
+            print(f"Saved heatmap for {domains[mal_index]} and {domains[med_index]}")
 
 # sys.exit(0)
 
@@ -212,9 +220,7 @@ for perp in perps:
             #     "pasta.esfile.duapps.com",
             #     "dts.ushareit.com",
             # ]
-            malicious_tsne = tsne[
-                np.where(np.isin(domains, malicious_domains))[0]
-            ]
+            malicious_tsne = tsne[np.where(np.isin(domains, malicious_domains))[0]]
             plt.scatter(
                 malicious_tsne[:, 0],
                 malicious_tsne[:, 1],
@@ -252,12 +258,8 @@ for perp in perps:
             #     "accounts.google.com",
             #     "www.gstatic.com",
             # ]
-            common_tsne = embeddings[
-                np.where(np.isin(domains, common_domains))[0]
-            ]
-            plt.scatter(
-                common_tsne[:, 0], common_tsne[:, 1], c="#00aa55", s=2500
-            )
+            common_tsne = embeddings[np.where(np.isin(domains, common_domains))[0]]
+            plt.scatter(common_tsne[:, 0], common_tsne[:, 1], c="#00aa55", s=2500)
             for i, _ in enumerate(common_tsne):
                 plt.scatter(
                     common_tsne[i, 0],

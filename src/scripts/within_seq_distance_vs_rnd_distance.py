@@ -1,10 +1,14 @@
+import os
 import sys
 
 sys.path.append("..")
+import argparse
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
-from utils.data_loader import SequenceGenerator, ClusterSequencingStrategy
+
+from utils.runs_management import RunManager
+from utils.data_loading import SequenceGenerator, ClusterSequencingStrategy
 
 
 def eucl_dist(a, b):
@@ -15,19 +19,30 @@ def cos_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
+argparser = argparse.ArgumentParser()
+argparser.add_argument("model")
+argparser.add_argument("run")
+args = argparser.parse_args()
+
+root_conf = RunManager.load_root_conf()
+data_path = root_conf.get("data_path")
+
 # Load
-embeddings_path = "../../runs/DELM/DELM-L32/embeddings.npy"
+embeddings_path = f"../../runs/{args.model}/{args.run}/embeddings.npy"
 embeddings = np.load(embeddings_path)
-domains_path = "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt"
+
+domains_path = os.path.join(data_path, "vocab", "domains_vocab.txt")
 domains = None
 with open(domains_path, "r") as f:
     domains = np.array(f.read().split("\n"))
 
-
-queries_path = f"/mnt/storage15/TI-2016/npy/tokenized/trivial/train"
 train = tf.data.Dataset.from_generator(
     SequenceGenerator(
-        queries_path, ClusterSequencingStrategy(), 32, False, True
+        os.path.join(data_path, "npy", "train"),
+        ClusterSequencingStrategy(),
+        32,
+        False,
+        True,
     ),
     output_signature=tf.TensorSpec(shape=(32, 2), dtype=tf.string),
 )
@@ -90,7 +105,7 @@ fig = plt.figure(
         2.5,
     )
 )
-# fig.suptitle("Euclidean distance")
+# fig.subtitle("Euclidean distance")
 plt.plot(avg_dists_real, label="Real sequences")
 plt.plot(avg_dists_random, label="Random sequences")
 plt.xlabel("Sequences")
@@ -98,4 +113,4 @@ plt.ylabel("Euclidean distance")
 plt.subplots_adjust(bottom=0.2, left=0.2)
 plt.legend(loc="lower right", fontsize="small")
 
-plt.savefig("../../runs/_extras/DELM/avg_dists.png")
+plt.savefig(f"../../runs/_extras/{args.model}/{args.run}/avg_dists.png")

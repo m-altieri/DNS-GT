@@ -12,7 +12,9 @@ class RunManager:
     project_root/
     ├── src/
     └── runs/
+        ├── default.yaml
         ├── DNS-GT/
+        |   ├── default.yaml
         │   ├── <run_name_1>/
         │   │   ├── weights.h5
         │   │   ├── embeddings.npy
@@ -24,6 +26,7 @@ class RunManager:
         │       ├── conf.yaml
         |       └── predictions.csv
         ├── W2V-CBOW/
+        |   ├── default.yaml
         │   ├── <run_name_1>/
         │   │   ├── weights.h5
         │   │   ├── embeddings.npy
@@ -34,6 +37,7 @@ class RunManager:
         │       ├── conf.yaml
         |       └── predictions.csv
         └── W2V-SkipGram/
+            ├── default.yaml
             └── <run_name>/
                 ├── weights.h5
                 ├── embeddings.npy
@@ -42,7 +46,7 @@ class RunManager:
     """
 
     # Static constants
-    _PROJECT_ROOT = ".."
+    _PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")  # ".."
     _WEIGHTS_FILE_NAME = "weights.h5"
     _WEIGHTS_FINETUNING_FILE_NAME = "weights.finetuning.h5"
     _EMBEDDINGS_FILE_NAME = "embeddings.npy"
@@ -372,3 +376,25 @@ class RunManager:
             conf_path,
             predictions_path,
         )
+
+    @staticmethod
+    def load_root_conf():
+        conf = {}
+
+        # Load default root conf as a base
+        default_root_conf_path = os.path.join(
+            __class__._PROJECT_ROOT, "runs", __class__._DEFAULT_CONF_FILE_NAME
+        )
+        try:
+            with open(
+                default_root_conf_path,
+                "r",
+            ) as f:
+                conf = conf | yaml.safe_load(f)
+        except:
+            print(
+                f"{Fore.RED}[ERROR] Could not load root conf file from {default_root_conf_path}.\n"
+                + f"Make sure that there exists a default.yaml file in the runs/ folder.{Fore.RESET}"
+            )
+
+        return conf

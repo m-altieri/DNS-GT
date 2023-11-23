@@ -1,15 +1,22 @@
 import os
+import sys
+
+sys.path.append("..")
+
 import pandas as pd
 import scapy.all as scapy
 
+from utils.runs_management import RunManager
+
 
 # Path containing pcap files
-INPUT_PATH = "/mnt/storage15/TI-2016"
+root_conf = RunManager.load_root_conf()
+data_path = root_conf.get("data_path")
 
 # Initialize dictionary to hold IP addresses and their DNS requests and responses
 ip_info = {}
 
-for root, dirs, files in os.walk(INPUT_PATH):
+for root, dirs, files in os.walk(data_path):
     for pcap_file in files:
         if not pcap_file.endswith(".pcap"):
             continue

@@ -112,8 +112,7 @@ python3 create_folds.py <DATA_PATH>
 
 ### 4. Pretrain the Models
 
-- Configure the default training parameters in `</path/to/>DNS-GT/runs/default.yaml` with the correct paths. Make sure that `queries_path`, `domains_vocab_path`, `hosts_vocab_path` and `test_folds_path` are all correctly set.
-
+- Configure the `data_path` in `</path/to/>DNS-GT/runs/default.yaml` with the correct path, for example `data_path: "<DATA_PATH>"`
 - Run the training:
 
 There are several parameters that can be customized. To start, run:

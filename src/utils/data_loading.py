@@ -91,7 +91,9 @@ class SequenceGenerator:
 
             # Pair up queries with domain class if necessary
             if self.include_class:
-                queries = self._add_class_to_queries(queries)
+                queries = self._add_class_to_queries(
+                    queries, os.path.join(self.input_folder, "..", "..")
+                )
 
             # Make sequences from queries with given strategy
             seqs = self.sequencing_strategy.make_sequences(
@@ -110,10 +112,12 @@ class SequenceGenerator:
                 yield seq
 
     @staticmethod
-    def _add_class_to_queries(queries):
+    def _add_class_to_queries(queries, data_path):
         # Load labels from blacklist
         labels = pd.read_csv(
-            os.path.join("scripts", "labels.csv"), index_col=0, header=[0, 1]
+            os.path.join(data_path, "labels.csv"),
+            index_col=0,
+            header=[0, 1],
         )
         labels.columns = pd.MultiIndex.from_tuples(
             [
@@ -135,9 +139,7 @@ class SequenceGenerator:
 
         # Only use labels for domains in embs (i.e. in the vocabulary)
         # TODO this only works for TrivialTokenizer
-        with open(
-            "/mnt/storage15/TI-2016/npy/tokenized/trivial/domain_vocab.txt", "r"
-        ) as f:
+        with open(os.path.join(data_path, "vocab", "domains_vocab.txt"), "r") as f:
             vocab = f.read().splitlines()
 
         labels = labels[labels["domain"].isin(vocab)]

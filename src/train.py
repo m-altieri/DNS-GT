@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from colorama import Fore, Style
+from prompt_toolkit import prompt
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
@@ -40,15 +41,6 @@ def parse_args():
         "--start-from",
         action="store",
         help="Specify which run to use as a starting point for training.",
-    )
-
-    # DEPRECATED
-    argparser.add_argument(
-        "--load",
-        action="store",
-        nargs="?",
-        const="last",
-        help="Whether to load the model from a saved checkpoint or to reinitialize a new one. Set it with no value or with 'last' to load the most recent checkpoint, or manually set a checkpoint file name.",
     )
     argparser.add_argument(
         "-v",
@@ -179,10 +171,22 @@ def parse_args():
     )
     argparser.add_argument("--evaluate", action="store_true")
     argparser.add_argument("--skip-predictions", action="store_true")
+    argparser.add_argument(
+        "-l",
+        "--labeling",
+        choices=["m", "b"],
+        help="The downstream task: m for malicious domain classification or b for botnet detection.",
+    )
+    argparser.add_argument(
+        "--adj-estimator",
+        action="store_true",
+        help="Whether to compute domain graph topologies and use them in the attention.",
+    )
 
     args = argparser.parse_args()
 
     assert args.test_seq is None or args.test_seq > 0
+    assert args.finetune is False or args.labeling is not None
 
     if args.evaluate:
         args.finetune = True
@@ -240,7 +244,8 @@ def build_model(model, conf, dist_strategy):
         tf.keras.losses.Reduction.NONE if conf.get("distribute") else "auto"
     )
     if conf.get("finetune"):
-        loss = tf.keras.losses.BinaryCrossentropy(
+        # previously it was BinaryCrossentropy when the only downstream task was MDC (binary)
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
             from_logits=False, reduction=loss_reduction
         )
     else:
@@ -306,11 +311,13 @@ def main():
         SequenceGenerator(
             os.path.join(conf.get("data_path"), "npy", "train"),
             sequencing_strategy,
+            conf.get("labeling"),
             conf.get("seqlen"),
             conf.get("finetune"),
             conf.get("group_by_host"),
             stride=conf.get("stride"),
             include_start=conf.get("include_start"),
+            tiny=args.tiny,
         ),
         output_signature=tf.TensorSpec(
             shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
@@ -321,11 +328,13 @@ def main():
         SequenceGenerator(
             os.path.join(conf.get("data_path"), "npy", "test"),
             sequencing_strategy,
+            conf.get("labeling"),
             conf.get("seqlen"),
             conf.get("finetune"),
             conf.get("group_by_host"),
             stride=conf.get("stride"),
             include_start=conf.get("include_start"),
+            tiny=args.tiny,
         ),
         output_signature=tf.TensorSpec(
             shape=[conf.get("seqlen"), 2 + conf.get("finetune")],
@@ -367,20 +376,32 @@ def main():
     run_manager.model_object = model
     run_manager.save_conf()
 
-    # If finetune, freeze all layers but the last classification layer,
-    # otherwise, unfreeze in case it was frozen
-    if conf.get("finetune"):
-        model.finetune()
-    else:
-        model.pretrain()
+    # If loading from a finetuned version, I will also load weights for the classification layers
+    if conf.get("finetune") and not conf.get("from_pretrained"):
+        print("Initializing downstream classifier")
+        model.init_downstream_classifier()
 
+    # Call the model to initialize layers
     print(f"Calling model to initialize layers...")
     if conf.get("distribute"):
         model.distributed_test_step(next(iter(test)))
     else:
         model.test_step(next(iter(test)))
 
+    # Load weights
     model = run_manager.load_weights(model)
+
+    # If loading from a pretrained version, I need the new classification layers
+    # after loading the weights
+    if conf.get("finetune") and conf.get("from_pretrained"):
+        model.init_downstream_classifier()
+
+    # If finetune, freeze all layers but the last classification layer,
+    # otherwise, unfreeze in case it was frozen
+    if conf.get("finetune"):
+        model.finetune()
+    else:
+        model.pretrain()
 
     if conf.get("demo"):
         demo(model, conf, test)
@@ -520,47 +541,75 @@ def demo(model, conf, data):
     conf["bs"] = 1
 
     print(
-        f"{Style.BRIGHT}\nDomain Embeddings Language Model{Style.RESET_ALL}\n"
-        + "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
-        + "Syntax: <Host> <Domain> -> <Predicted Domain> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
+        f"""{Style.BRIGHT}
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃    ____  _   _______       ____________┃
+┃   / __ \/ | / / ___/      / ____/_  __/┃
+┃  / / / /  |/ /\__ \______/ / __  / /   ┃
+┃ / /_/ / /|  /___/ /_____/ /_/ / / /    ┃
+┃/_____/_/ |_//____/      \____/ /_/     ┃
+┃                                        ┃
+┃  Domain Name System Graph Transformer  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    {Style.RESET_ALL}"""
     )
+    print(
+        "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
+        + "Syntax: <Host> <Domain> [(<Label>)] -> <Predicted> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
+        + f"{Fore.CYAN}Cyan{Fore.RESET}: domain is in test fold (model was not trained on that domain).\n"
+    )
+
     seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
-    seqs = data.unbatch().skip(seq_idx).shuffle(1000).take(5).as_numpy_iterator()
+    seqs = data.unbatch().skip(seq_idx).shuffle(1000).take(100).as_numpy_iterator()
     seqs = np.array([s for s in seqs], dtype=object)
-    for s in range(len(seqs)):
+    show_more = True
+    s = 0
+    while show_more:
+        # for s in range(len(seqs)):
         seq = seqs[s : s + 1]
 
         # <--- Modify seq here
-        print(np.shape(seq))
-        print(seq.shape)
-        if s == 4:
-            seq[0, :, 1] = "<PAD>"
-        seq[0, 0, 1] = "download.cdn.mozilla.net"
+        # if s == 4:
+        #     seq[0, :, 1] = "<PAD>"
+        # seq[0, 0, 1] = "download.cdn.mozilla.net"
 
         mask = np.zeros_like(seq)
         # <--- Modify mask here
         # place 1's where you want to replace tokens with <MASK>
-        # axis 0 is always 0 (array of length 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain
+        # axis 0 is always 0 (batch size 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain (and 2 for label if --ft)
         # example: mask[0, 1, 1]
-        #   always zero ^  ^  ^
+        #               ^  ^  ^
+        #   always zero |  |  |
         #     second token |  |
-        #                     | domain
-        # mask[0, 0, -1] = 1
-        # mask[0, 1, -1] = 1
-        # mask[0, 2, -1] = 1
+        #              domain |
+
         masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
 
         pred, loss, in_fold_mask = model._predict(seq, mask)
+
         print(f"Seq index: {seq_idx + s}")
 
-        if conf.get("finetune"):
-            pred = np.array(pred).flatten()
-            for p, _ in enumerate(pred):
-                domain = seq[0, p, 1]
-                label = seq[0, p, 2]
+        max_h_len = max([len(seq[0, q, 0]) for q in range(len(pred[0]))])
+        max_d_len = max([len(seq[0, q, 1]) for q in range(len(pred[0]))])
 
+        if conf.get("finetune"):
+            pred = np.squeeze(pred, axis=0)
+            for p, _ in enumerate(pred):
+                host, domain, label = seq[0, p]
+
+                host = host.decode("utf-8")
+                domain = domain.decode("utf-8")
+                label = label.decode("utf-8")
+
+                color = (
+                    Fore.CYAN
+                    if in_fold_mask[0, p]
+                    else Style.DIM
+                    if domain == "<PAD>"
+                    else ""
+                )
                 print(
-                    f"{Fore.CYAN if in_fold_mask[0,p] else ''}{domain} ({label}) -> {pred[p]:.3f}{Style.RESET_ALL}"
+                    f"{color}{host:<{max_h_len}} {domain:<{max_d_len}} ({label}) -> {np.argmax(pred[p], axis=-1)} ({np.max(pred[p], axis=-1):.2f}){Style.RESET_ALL}"
                 )
             print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
         else:
@@ -571,23 +620,29 @@ def demo(model, conf, data):
                 masked_host = model.inverse_hosts_lookup(
                     model.hosts_lookup(masked_seq[0, i, 0])
                 )
-
                 domain = model.inverse_domains_lookup(
                     model.domains_lookup(seq[0, i, 1])
                 )
-
                 masked_domain = model.inverse_domains_lookup(
                     model.domains_lookup(masked_seq[0, i, 1])
                 )
-
                 predicted_token = model.inverse_domains_lookup(
                     np.array(pred).argmax(axis=-1)[i]
                 )
                 domain_index = model.domains_lookup(domain)
+
+                masked_host = masked_host.numpy().decode("utf-8")
+                domain = domain.numpy().decode("utf-8")
+                masked_domain = masked_domain.numpy().decode("utf-8")
+                predicted_token = predicted_token.numpy().decode("utf-8")
+
                 print(
-                    f"{masked_host} {masked_domain} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
+                    f"{masked_host:<{max_h_len}} {masked_domain:<{max_d_len}} -> {f'{Fore.GREEN}' if domain == predicted_token else f'{Fore.RED}'}{predicted_token} ({100*(np.array(pred).max(axis=-1)[i]):.2f}%){Style.RESET_ALL} {f'{Style.DIM}({domain} {100*(np.array(pred)[i,domain_index]):.2f}%) {Style.RESET_ALL}' if not domain == predicted_token else ''}"
                 )
             print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
+
+        s += 1
+        show_more = prompt("Show more? ([Y]/N): ").lower() != "n"
 
 
 if __name__ == "__main__":

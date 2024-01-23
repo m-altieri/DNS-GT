@@ -221,7 +221,7 @@ class RunManager:
             model_object.load_weights(weights_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while loading model weights from {weights_path}: \n{e}{Fore.RESET}"
+                f"{Fore.YELLOW}[WARN] Could not load model weights from {weights_path}: \n{e}{Fore.RESET}"
             )
         else:
             if self.verbose:
@@ -238,7 +238,7 @@ class RunManager:
             embeddings = np.load(self.embeddings_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while loading model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
+                f"{Fore.YELLOW}[WARN] Could not load model embeddings from {self.embeddings_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
         else:
@@ -323,8 +323,7 @@ class RunManager:
             predictions = pd.read_csv(predictions_path)
         except Exception as e:
             print(
-                f"{Fore.RED}The following error occurred while loading "
-                + f"predictions from {predictions_path}: \n{e}{Fore.RESET}"
+                f"{Fore.YELLOW}[WARN] Could not load predictions from {predictions_path}: \n{e}{Fore.RESET}"
             )
             raise Exception(e)
         else:

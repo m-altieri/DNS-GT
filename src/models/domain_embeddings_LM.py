@@ -7,7 +7,9 @@ tf.random.set_seed(42)
 from lib.tf_matplotlib import tfmpl
 
 from utils.nn import FF
+from utils.constants import Constants
 from utils.distribute import DummyStrategy
+from utils.graphs import AdjacencyEstimator
 
 
 class DNS_GT(tf.keras.Model):
@@ -128,7 +130,8 @@ class DNS_GT(tf.keras.Model):
         self.host_embeddings.trainable = True
 
         self.masked_classifier.trainable = True
-        self.binary_classifier.trainable = False
+        if self.downstream_classifier is not None:
+            self.downstream_classifier.trainable = False
         self.finetuning = False
 
     def finetune(self):
@@ -143,8 +146,21 @@ class DNS_GT(tf.keras.Model):
             print("Freezing layers.")
 
         self.masked_classifier.trainable = False
-        self.binary_classifier.trainable = True
+        self.downstream_classifier.trainable = True
         self.finetuning = True
+
+    def init_downstream_classifier(self):
+        if self.downstream_classifier is None:
+            nclasses = {
+                "m": Constants._NCLASSES_MALICIOUS_CLASSIFICATION,
+                "b": Constants._NCLASSES_BOTNET_DETECTION,
+            }[self.conf.get("labeling")]
+
+            self.downstream_classifier = FF(
+                [self.conf["dim"], nclasses],
+                [None, "softmax"],
+                name="classification_layer",
+            )
 
     @staticmethod
     @tfmpl.figure_tensor
@@ -235,9 +251,11 @@ class DNS_GT(tf.keras.Model):
         )
 
         # Token Adjacency
-        # self.adj_estimator = AdjacencyEstimator(
-        #     type="binary", normalize=False, tb_writer=self.tb_writer
-        # )
+        self.adj_estimator = None
+        if self.conf.get("adj_estimator"):
+            self.adj_estimator = AdjacencyEstimator(
+                kind="binary", normalize=False, tb_writer=self.tb_writer
+            )
 
         # Load test fold if needed (finetuning)
         if self.conf.get("test_fold") is not None:
@@ -317,13 +335,13 @@ class DNS_GT(tf.keras.Model):
             input_dim=self.nhosts,
             output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
-            name="hosts_embedding",
+            name="host_embeddings",
         )
         self.domain_embeddings = tf.keras.layers.Embedding(
             input_dim=self.ndomains,
             output_dim=self.conf["dim"],
             input_length=self.conf["seqlen"],
-            name="domains_embedding",
+            name="domain_embeddings",
         )
 
         # Batch normalization
@@ -352,12 +370,8 @@ class DNS_GT(tf.keras.Model):
             name="softmax_layer",
         )
 
-        # supervised binary classifier
-        self.binary_classifier = FF(
-            [self.conf["dim"], 1],
-            [None, "sigmoid"],
-            name="classification_layer",
-        )
+        # downstream task softmax classifier
+        self.downstream_classifier = None
 
     def call(self, inputs, training=None, **kwargs):
         # Take host and domain tokens from the given sequence
@@ -444,7 +458,6 @@ class DNS_GT(tf.keras.Model):
             tf.cast(tf.not_equal(domains, b"<PAD>"), tf.float32),
             tf.cast(tf.not_equal(domains, b"<PAD>"), tf.float32),
         )
-
         # add self-loops to the <PAD> tokens
         # NOTE without self-loops (all 0s), the output of the softmax will
         # be 1/seqlen for each <PAD> (because the sum must equal to 1),
@@ -453,6 +466,13 @@ class DNS_GT(tf.keras.Model):
         # with self-loops on the <PAD>s, they are truly disconnected
         I = tf.cast(tf.eye(tf.shape(domains)[-1]), tf.bool)
         adj = tf.cast(tf.math.logical_or(tf.cast(adj, tf.bool), I), tf.int32)
+
+        # compute graph topologies
+        if self.adj_estimator is not None:
+            hierarchical_adj = self.adj_estimator(domains)
+            adj = tf.math.logical_and(
+                tf.cast(adj, tf.bool), tf.cast(hierarchical_adj, tf.bool)
+            )
 
         # Retrieve embedding for each token index
         e_d = self.domain_embeddings(domain_indexes)
@@ -497,14 +517,15 @@ class DNS_GT(tf.keras.Model):
         # NOTE this is memory inefficient, check if the problem can be fixed in another way
         if not self.initialized:
             res = self.masked_classifier(emb)
-            res = self.binary_classifier(emb)
+            if self.downstream_classifier is not None:
+                res = self.downstream_classifier(emb)
             self.initialized = True
 
         if not self.finetuning:
             res = self.masked_classifier(emb)
         else:
             res = tf.nn.dropout(emb, 0.2)
-            res = self.binary_classifier(res)
+            res = self.downstream_classifier(res)
 
         return res, mask
 
@@ -538,8 +559,6 @@ class DNS_GT(tf.keras.Model):
                 )
 
             else:
-                pred = tf.squeeze(pred, axis=-1)
-
                 if self.conf.get("test_fold") is not None:
                     in_fold = tf.math.reduce_any(
                         tf.equal(
@@ -610,8 +629,6 @@ class DNS_GT(tf.keras.Model):
                 regularization_losses=self.losses,
             )
         else:
-            pred = tf.squeeze(pred, axis=-1)
-
             if self.conf.get("test_fold") is not None:
                 in_fold = tf.math.reduce_any(
                     tf.equal(
@@ -652,7 +669,7 @@ class DNS_GT(tf.keras.Model):
             # seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
             seq = seq[..., :-1]
             pred, _ = self(seq, training=False)
-            pred = tf.squeeze(pred, axis=-1)
+            # pred = tf.squeeze(pred, axis=-1)
 
             in_fold_mask = tf.math.reduce_any(
                 tf.equal(
@@ -794,7 +811,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
             )
 
         # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
-        adj  # [B, L, L] -> [B, n_heads, L, L]
+        # [B, L, L] -> [B, n_heads, L, L]
         adj = tf.expand_dims(adj, axis=1)
         adj = tf.tile(adj, [1, tf.shape(scores)[1], 1, 1])
 
@@ -865,178 +882,3 @@ class MHGAT_Block(tf.keras.layers.Layer):
         self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         return result
-
-
-class AdjacencyEstimator(tf.keras.layers.Layer):
-    @tf.function
-    def duplicate_axis(self, tensor, from_axis, to_axis, order="C"):
-        # TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize
-        """tensor: input tensor
-        from_axis: the axis to duplicate
-        to_axis: the position of the new duplicated axis
-        order: 'C' for c-style ordering, 'F' for fortran-style ordering
-        """
-        tf.assert_equal(tf.constant(from_axis), tf.constant(1))
-        tf.assert_equal(tf.constant(to_axis), tf.constant(2))
-        tf.assert_equal(tf.rank(tensor), tf.constant(3))
-
-        dim = tf.shape(tensor)[from_axis]
-        tensor = tf.expand_dims(tensor, axis=to_axis)  # [B,L,1,maxlen]
-        tensor = tf.tile(tensor, [1, dim, 1, 1])  # [B,L*L,1,maxlen]
-        tensor = tf.reshape(
-            tensor, [tf.shape(tensor)[0], dim, dim, tf.shape(tensor)[-1]]
-        )  # [B,L,L,maxlen] controllare che reshapa bene
-
-        tensor = tf.cond(
-            tf.math.equal(order, tf.constant("F")),
-            lambda: tf.transpose(tensor, perm=[0, 2, 1, 3]),
-            lambda: tensor,
-        )
-
-        return tensor
-
-    @tf.function
-    def hierarchical_similarity(self, domains, **kwargs):
-        """
-        domains: Tensor of shape (Batch size, Seqlen)
-        Returns a Tensor of shape (Batch size, Seqlen, Seqlen),
-        where result[_,di,dj] is the hierarchical similarity
-        between domains di and dj.
-        """
-        splitted = tf.strings.split(domains, sep=".")  # [B,L,?] (RaggedTensor)
-        padded = tf.reverse(
-            splitted, axis=[-1]
-        ).to_tensor()  # [B,L,maxlen] reversed, right-padded
-        # (e.g. if maxlen is 4, 'graph.facebook.com' is now ['com', 'facebook', 'graph', ''])
-
-        padding_mask = tf.where(
-            tf.math.not_equal(padded, tf.constant("", dtype=tf.string)),
-            tf.ones_like(padded, dtype=tf.bool),
-            tf.zeros_like(padded, dtype=tf.bool),
-        )  # [B,L,maxlen] (following previous example: [True, True, True, False])
-
-        tiled = self.duplicate_axis(
-            padded, from_axis=1, to_axis=2, order="C"
-        )  # [B,L,L,maxlen]
-        tiled_f_order = tf.transpose(tiled, perm=[0, 2, 1, 3])  # [B,L,L,maxlen]
-
-        commons = tf.where(
-            tf.math.equal(tiled, tiled_f_order)
-            | tf.math.equal(tiled, "<MASK>")
-            | tf.math.equal(tiled_f_order, "<MASK>")
-            | tf.math.equal(tiled, "<START>")
-            | tf.math.equal(tiled_f_order, "<START>"),
-            tf.ones_like(tiled, dtype=tf.bool),
-            tf.zeros_like(tiled, dtype=tf.bool),
-        )  # [B,L,L,maxlen]
-
-        commons = tf.math.logical_and(
-            commons, self.duplicate_axis(padding_mask, from_axis=1, to_axis=2)
-        )  # [B,L,L,maxlen]
-
-        commons = tf.math.reduce_sum(tf.cast(commons, tf.int32), axis=-1)  # [B,L,L]
-
-        # For each pair of domains (d_i, d_j), calculate the number of subdomains
-        # of the one that has fewer between d_i and d_j
-        pairwise_shorter = tf.math.logical_and(
-            self.duplicate_axis(padding_mask, from_axis=1, to_axis=2, order="C"),
-            self.duplicate_axis(padding_mask, from_axis=1, to_axis=2, order="F"),
-        )  # [B,L,L,maxlen]
-        pairwise_shorter = tf.math.reduce_sum(
-            tf.cast(pairwise_shorter, dtype=tf.int32), axis=-1
-        )  # [B,L,L]
-
-        # Calculate the similarity between domains d_i and d_j as the ratio
-        # between the number of common subdomains and the number of subdomains
-        # of the one that has fewer
-        similarity = tf.math.divide(commons, pairwise_shorter)
-
-        return tf.cast(similarity, tf.float32)
-
-    @tf.function
-    def construct_adjacency(self, similarity, type, threshold):
-        return tf.case(
-            [
-                (
-                    tf.math.equal(type, "binary"),
-                    lambda: tf.where(
-                        tf.math.less(similarity, threshold),
-                        tf.zeros_like(similarity),
-                        tf.ones_like(similarity),
-                    ),
-                ),
-                (
-                    tf.math.equal(type, "cutoff"),
-                    lambda: tf.where(
-                        tf.math.less(similarity, threshold),
-                        tf.zeros_like(similarity),
-                        similarity,
-                    ),
-                ),
-                (
-                    tf.math.equal(type, "weighted"),
-                    lambda: similarity,
-                ),
-            ],
-            exclusive=True,
-        )
-
-    @tf.function
-    def _normalize(self, adj):
-        """
-        Normalize adjacency matrix using degree matrix.
-        adj <- D^(-1/2) * adj * D^(-1/2)
-        Note: adj is assumed to already contain self-loops (adj_ii == 1 in any case)
-        """
-        adj = tf.cast(adj, tf.float32)
-        D = tf.reduce_sum(adj, axis=-1)  # [B,L]
-        D = tf.linalg.diag(D)
-        D = tf.math.reciprocal_no_nan(tf.math.sqrt(D))
-        return tf.matmul(D, tf.matmul(adj, D))
-
-    def __init__(self, type, threshold=0.3, normalize=True, **kwargs):
-        """
-        Estimate the adjacency of the domains graph.
-        type (string): either 'binary', 'cutoff', or 'weighted'.
-        If 'binary', the adjacency between each pair of domains is either 0 or 1
-        depending on the threshold.
-        If 'cutoff', the adjacency between each pair of domains is 0 if their similarity
-        is lower than the threshold, and is equal to their similarity otherwise
-        If 'weighted', threshold has no effect and the adjacency is equal to the similarity
-        threshold (float): if binary is True, threshold is the lowest similarity
-        between any two domains for them to be considered adjacent in the graph.
-        If binary is False, it has no effect.
-        laplacian_norm (bool): whether to normalize the resulting adjacency matrix
-        using the Laplacian
-        """
-        super().__init__()
-
-        # TensorBoard
-        self.tb_writer = kwargs.get("tb_writer", None)
-        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-
-        # Adjacency Conf
-        self.type = type
-        self.threshold = threshold
-        self.normalize = normalize
-
-    def call(self, inputs):
-        # inputs [B,L]
-        hierarchical_similarity = self.hierarchical_similarity(inputs, step=self.step)
-
-        adj = self.construct_adjacency(
-            hierarchical_similarity, self.type, self.threshold
-        )
-        adj = tf.cond(
-            tf.math.equal(self.normalize, True),
-            lambda: self._normalize(adj),
-            lambda: adj,
-        )
-
-        # if self.tb_writer:
-        #     with self.tb_writer.as_default():
-        #         tf.summary.image("adj", tf.expand_dims(adj, axis=-1), step=0)
-
-        self.step.assign_add(tf.constant(1, dtype=tf.int64))
-
-        return adj

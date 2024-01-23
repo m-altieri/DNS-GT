@@ -1,15 +1,19 @@
 import os
 import numpy as np
-import pandas as pd
 from abc import abstractmethod
 from sklearn.cluster import DBSCAN
 from typing import Any, Iterator, Protocol
+
+from utils.labeling import (
+    LabelMatcher,
+    BotnetDetectionLabelMatcher,
+    MaliciousDomainClassificationLabelMatcher,
+)
 
 
 class SequencingStrategy(Protocol):
     @abstractmethod
     def make_sequences(
-        self,
         queries: np.ndarray[Any, np.dtype[object]],
         seqlen: int,
         include_class: bool,
@@ -40,6 +44,7 @@ class SequenceGenerator:
         self,
         input_folder: str,
         sequencing_strategy: SequencingStrategy,
+        task: str,
         seqlen: int,
         include_class: bool,
         group_by_host: bool,
@@ -68,7 +73,27 @@ class SequenceGenerator:
         self.seqlen = seqlen
         self.include_class = include_class
         self.group_by_host = group_by_host
+        self.label_matcher: LabelMatcher = None
+        if task is not None:
+            self.label_matcher = self._get_label_matcher_from_task(task)(
+                os.path.join(
+                    self.input_folder, "..", "..", "vocab", "domains_vocab.txt"
+                )
+            )
         self.kwargs = kwargs
+
+    @staticmethod
+    def _get_label_matcher_from_task(task: str) -> LabelMatcher:
+        return {
+            "m": MaliciousDomainClassificationLabelMatcher,
+            "malicious": MaliciousDomainClassificationLabelMatcher,
+            "maliciousdomainclassification": MaliciousDomainClassificationLabelMatcher,
+            "maliciousdomainclassificationlabelmatcher": MaliciousDomainClassificationLabelMatcher,
+            "b": BotnetDetectionLabelMatcher,
+            "botnet": BotnetDetectionLabelMatcher,
+            "botnetdetection": BotnetDetectionLabelMatcher,
+            "botnetdetectionlabelmatcher": BotnetDetectionLabelMatcher,
+        }[task]
 
     def set_strategy(self, strategy: SequencingStrategy) -> None:
         self.sequencing_strategy = strategy
@@ -89,10 +114,13 @@ class SequenceGenerator:
             # Load queries from file
             queries = np.load(os.path.join(self.input_folder, f), allow_pickle=True)
 
-            # Pair up queries with domain class if necessary
+            # Match queries with labels if necessary
             if self.include_class:
-                queries = self._add_class_to_queries(
-                    queries, os.path.join(self.input_folder, "..", "..")
+                labels_filename = f"labels_{'m' if isinstance(self.label_matcher, MaliciousDomainClassificationLabelMatcher) else 'b'}.csv"
+                queries = self.label_matcher.match_labels(
+                    queries,
+                    os.path.join(self.input_folder, "..", "..", labels_filename),
+                    queries_filename=f,
                 )
 
             # Make sequences from queries with given strategy
@@ -107,62 +135,10 @@ class SequenceGenerator:
             # Yield each sequence
             for seq in seqs:
                 # print(seq)
-                # print(seq.shape)
-                # print(seq.dtype)
                 yield seq
 
-    @staticmethod
-    def _add_class_to_queries(queries, data_path):
-        # Load labels from blacklist
-        labels = pd.read_csv(
-            os.path.join(data_path, "labels.csv"),
-            index_col=0,
-            header=[0, 1],
-        )
-        labels.columns = pd.MultiIndex.from_tuples(
-            [
-                ("domain", ""),
-                ("advertising", "good"),
-                ("advertising", "ok"),
-                ("malicious", "good"),
-                ("malicious", "ok"),
-                ("suspicious", "good"),
-                ("suspicious", "ok"),
-                ("tracking", "good"),
-                ("tracking", "ok"),
-                ("other", "good"),
-                ("other", "ok"),
-                ("any", "good"),
-                ("any", "ok"),
-            ]
-        )
-
-        # Only use labels for domains in embs (i.e. in the vocabulary)
-        # TODO this only works for TrivialTokenizer
-        with open(os.path.join(data_path, "vocab", "domains_vocab.txt"), "r") as f:
-            vocab = f.read().splitlines()
-
-        labels = labels[labels["domain"].isin(vocab)]
-        labels = labels.reset_index()
-
-        labels = labels.sort_values(
-            by="domain",
-            key=lambda domains: domains.map(lambda domain: vocab.index(domain)),
-        )
-
-        # take (any, good) column
-        labels = labels[["domain", "any"]]
-        labels = labels.to_numpy()[:, [0, 1]]  # [0, 2] for 'ok'
-
-        # add class to each query
-        sorter = np.argsort(labels[:, 0])
-        idx = sorter[np.searchsorted(labels[:, 0], queries[:, 1], sorter=sorter)]
-        classes = labels[idx, 1]
-        queries = np.concatenate(
-            [queries, np.expand_dims(classes, -1).astype(str)], axis=-1
-        )
-
-        return queries
+            if self.kwargs.get("tiny"):
+                break
 
 
 def pad(sequence, to_len, token="<PAD>"):

@@ -1,7 +1,7 @@
 # DNS-GT
 
-DNS-GT is a a Transformer-based model that learns embeddings for domain names using DNS queries.
-
+DNS-GT is a Transformer-based model that learns embeddings for domain names using DNS
+queries.
 ---
 
 ![Python 3.9](doc/shields/python-3.9-green.png)
@@ -16,7 +16,6 @@ Make sure to use the Python and TensorFlow versions specified at the top of this
 
 ### Install the required libraries:
 
-For example,
 ```
 python3 -m pip install -r requirements.txt
 ```
@@ -32,15 +31,20 @@ git clone https://github.com/m-altieri/DNS-GT.git
 
 ### 2. Get the Data
 
-- Download the raw DNS traffic dataset (TI-2016) from https://ieee-dataport.org/documents/ti-2016-dns-dataset and save it in `<DATA_PATH>`.
-It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and Day9, for a total of 240 pcap files.
-The total size of the dataset should be around 113 GiB.
+- Download the raw DNS traffic dataset (TI-2016) from
+  https://ieee-dataport.org/documents/ti-2016-dns-dataset and save it in `<DATA_PATH>`.
+
+It should contain 10 folders: Day0, Day1, Day2, Day3, Day4, Day5, Day6, Day7, Day8 and
+Day9, for a total of 240 pcap files. The total size of the dataset should be around 113
+GiB.
 
 - Download the blacklists with:
 ```
 bash src/scripts/download_blacklists.sh <DATA_PATH>
 ```
-They will be downloaded from `https://firebog.net` and automatically organized in different folders depending on their category (`advertising`, `malicious`, `other`, `suspicious` and `tracking`) and quality (`good` and `ok`).
+They will be downloaded from `https://firebog.net` and automatically organized in
+different folders depending on their category (`advertising`, `malicious`, `other`,
+`suspicious` and `tracking`) and quality (`good` and `ok`).
 
 ### 3. Data Preprocessing
 
@@ -50,10 +54,11 @@ They will be downloaded from `https://firebog.net` and automatically organized i
 sh src/preprocessing/pcap2csv.sh <DATA_PATH>
 ```
 
-This step performs an initial filtering, removing packets that are not DNS queries or that are malformed, and extracts only the relevant fields from each packet.
-It will create a new `tcsv` folder in `<DATA_PATH>` with 240 csv files, one for each pcap file.
-The process can take up to a few hours and the resulting folder is around 72 GiB in size.
-
+This step performs an initial filtering, removing packets that are not DNS queries or
+that are malformed, and extracts only the relevant fields from each packet. It will
+create a new `tcsv` folder in `<DATA_PATH>` with 240 csv files, one for each pcap file.
+The process can take up to a few hours and the resulting folder is around 72 GiB in
+size.
 
 - Preprocess csv files:
 
@@ -62,9 +67,9 @@ cd </path/to/>DNS-GT/src/preprocessing
 python3 process_tshark_csvs.py <DATA_PATH>
 ```
 
-This will create a new `pcsv` folder in `<DATA_PATH>` with 240 csv files, but a total size of just around 1.8 GiB, cleaning the DNS traffic and extracting only the useful information.
-The process can take up to 2 hours, and the resulting folder is around 72 GiB in size.
-
+This step performs cleaning and extraction of useful information. This will create a new
+`pcsv` folder in `<DATA_PATH>` with 240 csv files. The process can take up to 2 hours,
+and the resulting folder is around 1.8 GiB in size.
 
 - Create the vocabulary from the processed queries and convert the csv files into the final npy files:
 

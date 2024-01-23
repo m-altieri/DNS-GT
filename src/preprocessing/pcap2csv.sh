@@ -1,6 +1,9 @@
 #!/bin/sh
 # Preprocessing of PCAP files using tshark
 #
+# This scripts extract all meaningful information and save them as CSV files with a
+# similar folder structure.
+#
 # Author: Massimiliano Altieri <massimiliano.altieri@ec.europa.eu>
 # Author: Ronan Hamon <ronan.hamon@ec.europa.eu>
 
@@ -8,7 +11,7 @@ echo "Conversion of PCAP files into CSV"
 
 # Test the absence of argument
 if [ -z "$1" ]; then
-  echo "A folder should be as argument."
+  echo "A folder should be given as argument."
   exit 1
 fi
 

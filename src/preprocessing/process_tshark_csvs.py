@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Preprocessing of CSV files after conversion with `tshark`.
 
@@ -28,6 +27,11 @@ import sys
 import argparse
 import pandas as pd
 from datetime import datetime
+
+
+MIN_RATIO_REQ_RES = 0.8
+MAX_RATIO_REQ_RES = 1.2
+
 
 # -- Argument Parsing
 argparser = argparse.ArgumentParser()
@@ -192,8 +196,8 @@ for filename in os.listdir(tcsv_path):
     )
     ip_info["is_valid"] = (
         (ip_info["n_requests_sent"] > 100)
-        & (ip_info["ratio_req_res"] > 0.985)
-        & (ip_info["ratio_req_res"] < 1.015)
+        & (ip_info["ratio_req_res"] > MIN_RATIO_REQ_RES)
+        & (ip_info["ratio_req_res"] < MAX_RATIO_REQ_RES)
         & (ip_info["is_resolver"] == False)
     )
 

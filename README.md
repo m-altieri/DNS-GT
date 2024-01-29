@@ -48,70 +48,77 @@ different folders depending on their category (`advertising`, `malicious`, `othe
 
 ### 3. Data Preprocessing
 
-- Convert the pcap files into csv files using the [tshark](https://tshark.dev/setup/install/):
+Move into the `preprocessing` folder.
+```
+cd </path/to/>DNS-GT/src/preprocessing
+```
+
+1. Converting into CSV
+
+This step performs a basic filtering, removing packets that are not DNS queries or that
+are malformed, and extracts only the relevant fields from each packet. It will create a
+new `tcsv` folder in `<DATA_PATH>` with 240 csv files, one for each pcap file.
+[tshark](https://tshark.dev/setup/install/) needs to be installed.
 
 ```
-sh src/preprocessing/pcap2csv.sh <DATA_PATH>
+sh pcap2csv.sh <DATA_PATH>
 ```
-
-This step performs an initial filtering, removing packets that are not DNS queries or
-that are malformed, and extracts only the relevant fields from each packet. It will
-create a new `tcsv` folder in `<DATA_PATH>` with 240 csv files, one for each pcap file.
 The process can take up to a few hours and the resulting folder is around 72 GiB in
 size.
 
-- Preprocess csv files:
 
-```
-cd </path/to/>DNS-GT/src/preprocessing
-python3 process_tshark_csvs.py <DATA_PATH>
-```
+2. Preprocessing CSV files:
 
 This step performs cleaning and extraction of useful information. This will create a new
-`pcsv` folder in `<DATA_PATH>` with 240 csv files. The process can take up to 2 hours,
-and the resulting folder is around 1.8 GiB in size.
+`pcsv` folder in `<DATA_PATH>` with 240 csv files. 
+```
+python3 process_tshark_csvs.py <DATA_PATH>
+```
+The process can take up to 2 hours, and the resulting folder is around 1.8 GiB in size.
 
-- Create the vocabulary from the processed queries and convert the csv files into the final npy files:
+3. Creating the vocabulary and converting into npy
+
+This will create the vocabulary (as a pair of two files, one for hosts and one for
+domains) and the final query files in npy format. The vocabulary will be created in
+`<DATA_PATH>/vocab/`. The query files will be created in `<DATA_PATH>/npy/`, and will be
+split automatically into a `train` folder containing the first 70% files, and a `test`
+folder containing the remaining 30% files.
 
 ```
 python3 csv2npy.py <DATA_PATH>
 ```
 
-This will create the vocabulary (as a pair of two files, one for hosts and one for domains) and the final query files in npy format. 
-The vocabulary will be created in `<DATA_PATH>/vocab/`. 
-The query files will be created in `<DATA_PATH>/npy/`, and will be split automatically into a `train` folder containing the first 70% files, and a `test` folder containing the remaining 30% files.
+4. Processing the blacklists (optional)
 
-- Process the blacklists
-
-Move the blacklists to the same path as the other data, to have all data-related files in a single place:
-
+Move the blacklists to the same path as the other data, to have all data-related files
+in a single place:
 ```
 mv </path/to/>DNS-GT/data/blacklists <DATA_PATH>
 ```
 
 Then, merge blacklists in a single file, for each category and quality:
-
 ```
 cd </path/to/>DNS-GT/src/scripts
 python3 merge_blacklists.py <DATA_PATH>
 ```
-
 This script will browse the `blacklists` folder and merge the blacklists for each category and quality in a single filed called `blacklist.txt`, saved in the respective directory.
 
-
-- Create labels for domains in the dictionary:
+5. Creating labels for domains in the dictionary (optional)
 
 ```
 python3 label_domains.py <DATA_PATH>
 ```
 
-This script will create a `labels.csv` file in `<DATA_PATH>` containing domains names, and booleans (0 or 1) for their blacklisted status, for all categories (advertising, malicious, suspicious, tracking, other, and any) and qualities (good and ok), for a total of 13 significative columns.
+This script will create a `labels.csv` file in `<DATA_PATH>` containing domains names,
+and booleans (0 or 1) for their blacklisted status, for all categories (advertising,
+malicious, suspicious, tracking, other, and any) and qualities (good and ok), for a
+total of 13 significative columns.
 
-- Create test folds
+6. Creating test folds
 
-As a last preprocessing step, it is required to create test folds for the downstream task:
+As a last preprocessing step, it is required to create test folds for the downstream
+task:
 ```
-cd </path/to/>DNS-GT/src/scripts
 python3 create_folds.py <DATA_PATH>
 ```
 

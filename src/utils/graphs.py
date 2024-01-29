@@ -1,7 +1,31 @@
 import tensorflow as tf
+from typing import Protocol
+from abc import abstractmethod
 
 
-class AdjacencyEstimator(tf.keras.layers.Layer):
+class AdjacencyEstimator(Protocol):
+    @abstractmethod
+    def __init__(self):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def call(self, domains: tf.Tensor) -> tf.Tensor:
+        """Return an adjacency matrix of shape [batch_size, L, L]
+        from an input of shape [batch_size, L].
+        """
+        raise NotImplementedError()
+
+
+class TrivialAdjacencyEstimator(tf.keras.layers.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def call(self, domains):
+        ones = tf.ones(domains.shape[-1])
+        return tf.cast(tf.einsum("i,j->ij", ones, ones), tf.int32)
+
+
+class HierarchicalSimilarityEstimator(tf.keras.layers.Layer):
     @tf.function
     def duplicate_axis(self, tensor, from_axis, to_axis, order="C"):
         # TODO only works with exactly from_axis=1, to_axis=2 and rank(tensor)==3; generalize

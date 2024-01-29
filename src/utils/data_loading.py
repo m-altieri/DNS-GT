@@ -181,6 +181,7 @@ class FixedSequencingStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
+        with_timestamps: bool=False,
         **kwargs: Any,
     ) -> np.ndarray:
         # get kwargs
@@ -192,7 +193,7 @@ class FixedSequencingStrategy:
             queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
 
         # if the timestamp is present, remove it
-        if np.shape(queries)[-1] == 3 + include_class:
+        if not with_timestamps and np.shape(queries)[-1] == 3 + include_class:
             queries = np.delete(queries, 2, axis=1)
 
         # if the domain is a list (tokenized), take the first element
@@ -234,6 +235,7 @@ class ClusterSequencingStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
+        with_timestamps: bool=False,
         **kwargs: Any,
     ) -> np.ndarray:
         seqs = []
@@ -256,7 +258,8 @@ class ClusterSequencingStrategy:
                 ]  # get queries associated to the current cluster label
 
                 # remove timestamp once it's no longer needed
-                cluster = np.delete(cluster, 2, axis=1)
+                if not with_timestamps:
+                    cluster = np.delete(cluster, 2, axis=1)
 
                 # take first element of the domain (the domain is a list with always one token)
                 # TODO this only works for the trivial tokenizer
@@ -325,6 +328,7 @@ class TimeWindowStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
+        with_timestamps: bool=False,
         **kwargs: Any,
     ) -> np.ndarray:
         verbose = kwargs.get("verbose", False)
@@ -389,6 +393,7 @@ class TimeWindowStrategy:
         seqs = np.array(seqs, dtype=str)
 
         # remove timestamp
-        seqs = np.delete(seqs, 2, axis=-1)
+        if not with_timestamps:
+            seqs = np.delete(seqs, 2, axis=-1)
 
         return seqs

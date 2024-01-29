@@ -1,8 +1,10 @@
 """Visualisation of the sequencing strategies."""
 
+import os
 from pathlib import Path
-import tensorflow as tf
-from tqdm import tqdm
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 from utils.data_loading import (
     SequenceGenerator,
@@ -11,40 +13,25 @@ from utils.data_loading import (
     ClusterSequencingStrategy,
 )
 
+queries_folder = Path("/mnt/storage15/rhTI2016/npy/train")
 
-# data_path = Path("/mnt/storage15/rhTI2016/")
-data_path = Path("/mnt/storage15/TI-2016/")
+strategy = ClusterSequencingStrategy()
+# strategy = FixedSequencingStrategy()
 
-if __name__ == "__main__":
+sequencing_strategies = {
+    "fixed": FixedSequencingStrategy(),
+    "time": TimeWindowStrategy(),
+    "cluster": ClusterSequencingStrategy(),
+}
 
-    sequencing_strategies = {
-        "fixed": FixedSequencingStrategy(),
-        "time": TimeWindowStrategy(),
-        "cluster": ClusterSequencingStrategy(),
-    }
+sequencing_strategy = sequencing_strategies["fixed"]
 
-    sequencing_strategy = sequencing_strategies["fixed"]
+generator = SequenceGenerator(input_folder=queries_folder, sequencing_strategy=sequencing_strategy, 
+        task=None, seqlen=32, include_class=False, group_by_host=True)
 
-    train = tf.data.Dataset.from_generator(
-        SequenceGenerator(
-            data_path / "npy" / "train",
-            sequencing_strategy,
-            seqlen=32,
-            task=None,
-            include_class=False,
-            group_by_host=True,
-            stride=1,
-            include_start=False,
-        ),
-        output_signature=tf.TensorSpec(
-            shape=[32, 2],
-            dtype=tf.string,
-        ),
-    )
+queries = np.load(queries_folder / "20160424_135417.npy", allow_pickle=True)
+seqs = strategy.make_sequences(
+    queries, seqlen=32, include_class=False, group_by_host=True, with_timestamps=True
+)
 
-    train = train.batch(8).prefetch(tf.data.AUTOTUNE)
-
-
-    pbar = tqdm(train, total=10)
-    for x in pbar:
-        pass
+timestamps = [[float(qry[2]) for qry in seq if qry[2] != '0'] for seq in seqs]

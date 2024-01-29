@@ -565,23 +565,25 @@ def demo(model, conf, data):
     show_more = True
     s = 0
     while show_more:
-        # for s in range(len(seqs)):
         seq = seqs[s : s + 1]
 
         # <--- Modify seq here
-        # if s == 4:
+        # if s == 0:
         #     seq[0, :, 1] = "<PAD>"
         # seq[0, 0, 1] = "download.cdn.mozilla.net"
+        # --->
 
         mask = np.zeros_like(seq)
         # <--- Modify mask here
         # place 1's where you want to replace tokens with <MASK>
         # axis 0 is always 0 (batch size 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain (and 2 for label if --ft)
-        # example: mask[0, 1, 1]
+        # example: mask[0, 1, 1] = 1
         #               ^  ^  ^
         #   always zero |  |  |
         #     second token |  |
         #              domain |
+        mask[0, 0, 1] = 1
+        # --->
 
         masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
 
@@ -642,7 +644,7 @@ def demo(model, conf, data):
             print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
 
         s += 1
-        show_more = prompt("Show more? ([Y]/N): ").lower() != "n"
+        show_more = prompt("Show more? ([Y]/N): ").lower().strip() != "n"
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import os
-import datetime
 import numpy as np
 import tensorflow as tf
 
@@ -9,10 +8,169 @@ from lib.tf_matplotlib import tfmpl
 from utils.nn import FF
 from utils.constants import Constants
 from utils.distribute import DummyStrategy
-from utils.graphs import AdjacencyEstimator
+from utils.graphs import (
+    AdjacencyEstimator,
+    TrivialAdjacencyEstimator,
+    HierarchicalSimilarityEstimator,
+)
+from utils.logging import TBManager
 
 
 class DNS_GT(tf.keras.Model):
+    def __init__(self, conf, dist_strategy):
+        super().__init__()
+
+        # Configuration
+        self.conf = conf
+
+        # Distribution
+        self.dist_strategy = dist_strategy
+        self.distributed = self.dist_strategy is not DummyStrategy
+        if self.distributed:
+            print(
+                f"Initializing model with distribution strategy: {self.dist_strategy}"
+            )
+
+        self.finetuning = False
+        self.initialized = False  # TODO if this is a tf.Variable(False), and i modify it with .assign(), the weights won't save
+
+        # TensorBoard Init
+        self.tb_manager = TBManager(
+            f"../tensorboard/{conf.get('model')}",
+            self.conf.get("run_name"),
+            tmp=self.conf["quick_tb"],
+            interval=1 if self.conf["demo"] else None,
+            active=self.conf["tensorboard"],
+        )
+
+        # Token Adjacency
+        self.adj_estimators: list[AdjacencyEstimator] = []
+        if self.conf.get("adj_estimator"):
+            self.adj_estimators.append(
+                HierarchicalSimilarityEstimator(
+                    kind="binary", normalize=False, tb_manager=self.tb_manager
+                )
+            )
+        if len(self.adj_estimators) == 0:
+            # the "base" adjacency. i need something to logical_end pad_adj with
+            self.adj_estimators.append(TrivialAdjacencyEstimator())
+
+        # Load test fold if needed (finetuning)
+        if self.conf.get("test_fold") is not None:
+            fold = np.load(
+                os.path.join(
+                    self.conf.get("data_path"),
+                    "test_folds",
+                    f"partition-{self.conf.get('test_partition')}",
+                    f"fold-{self.conf.get('test_fold')}.npy",
+                )
+            )
+            self.test_fold = tf.constant(fold)
+
+        # Load vocabularies
+        self.hosts_vocabulary = (
+            open(
+                os.path.join(self.conf.get("data_path"), "vocab", "hosts_vocab.txt"),
+                "r",
+            )
+            .read()
+            .split("\n")
+        )
+        self.domains_vocabulary = (
+            open(
+                os.path.join(self.conf.get("data_path"), "vocab", "domains_vocab.txt"),
+                "r",
+            )
+            .read()
+            .split("\n")
+        )
+
+        # NOTE if max_tokens, I am trimming both hosts and domains to max_tokens;
+        # in theory hosts are a lot less problematic and could be left untrimmed
+        if self.conf.get("max_tokens"):
+            self.hosts_vocabulary = self.hosts_vocabulary[: self.conf.get("max_tokens")]
+            self.domains_vocabulary = self.domains_vocabulary[
+                : self.conf.get("max_tokens")
+            ]
+            # If I truncate, I have to add back the special ones that are now excluded
+            self.hosts_vocabulary.append("<PAD>")
+            self.domains_vocabulary.append("<PAD>")
+            print(
+                f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
+            )
+
+        self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
+        self.domains_vocabulary = tf.constant(self.domains_vocabulary)
+
+        # Token Indexes Lookup
+        self.hosts_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.hosts_vocabulary,
+            num_oov_indices=1,
+            name="hosts_lookup",
+        )
+        self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.hosts_vocabulary,
+            num_oov_indices=1,
+            invert=True,
+            name="inverse_hosts_lookup",
+        )
+        self.domains_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.domains_vocabulary,
+            num_oov_indices=1,
+            name="domains_lookup",
+        )
+        self.inverse_domains_lookup = tf.keras.layers.StringLookup(
+            vocabulary=self.domains_vocabulary,
+            num_oov_indices=1,
+            invert=True,
+            name="inverse_domains_lookup",
+        )
+        self.nhosts = self.hosts_lookup.vocabulary_size()
+        self.ndomains = self.domains_lookup.vocabulary_size()
+
+        # Tokens Embeddings
+        self.host_embeddings = tf.keras.layers.Embedding(
+            input_dim=self.nhosts,
+            output_dim=self.conf["dim"],
+            input_length=self.conf["seqlen"],
+            name="host_embeddings",
+        )
+        self.domain_embeddings = tf.keras.layers.Embedding(
+            input_dim=self.ndomains,
+            output_dim=self.conf["dim"],
+            input_length=self.conf["seqlen"],
+            name="domain_embeddings",
+        )
+
+        # Batch normalization
+        self.bn = tf.keras.layers.BatchNormalization()
+
+        # MHGAT blocks
+        self.blocks = [
+            MHGAT_Block(
+                n_heads=self.conf["n_heads"],
+                emb_dim=self.conf["dim"]
+                * (
+                    1 + self.conf.get("concat_hosts")
+                ),  # if --concat-hosts, the size of internal layers is doubled
+                block_id=b,
+                tensorboard=self.conf["tensorboard"],
+                tb_manager=self.tb_manager,
+                name=f"MHGAT_Block_{b}",
+            )
+            for b in range(self.conf["blocks"])
+        ]
+
+        # MLM softmax classifier
+        self.masked_classifier = FF(
+            [self.conf["dim"], self.ndomains],
+            [None, "softmax"],
+            name="softmax_layer",
+        )
+
+        # downstream task softmax classifier
+        self.downstream_classifier = None
+
     def get_config(self):
         return self.conf
 
@@ -206,173 +364,6 @@ class DNS_GT(tf.keras.Model):
         fig.tight_layout()
         return fig
 
-    def __init__(self, conf, dist_strategy):
-        super().__init__()
-
-        # Configuration
-        self.conf = conf
-
-        # Distribution
-        self.dist_strategy = dist_strategy
-        self.distributed = self.dist_strategy is not DummyStrategy
-        if self.distributed:
-            print(
-                f"Initializing model with distribution strategy: {self.dist_strategy}"
-            )
-
-        self.finetuning = False
-        self.initialized = False  # TODO if this is a tf.Variable(False), and i modify it with .assign(), the weights won't save
-
-        # TensorBoard Init
-        TB_FOLDER = f"../tensorboard/{conf.get('model')}"
-        self.tb_path = None
-        if not os.path.exists(TB_FOLDER):
-            os.makedirs(TB_FOLDER)
-        if not self.conf["quick_tb"]:
-            self.tb_path = os.path.join(
-                TB_FOLDER,
-                self.conf.get("run_name")
-                or datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
-            )
-        else:
-            # set tensorboard path folder to tmp
-            self.tb_path = os.path.join(TB_FOLDER, "tmp")
-
-            # remove existing files in tmp folder if it exists
-            if os.path.exists(self.tb_path):
-                for filename in os.listdir(self.tb_path):
-                    os.remove(os.path.join(self.tb_path, filename))
-
-        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        self.tb_writer = (
-            tf.summary.create_file_writer(self.tb_path)
-            if self.conf["quick_tb"] or self.conf["tensorboard"] or self.conf["verbose"]
-            else None
-        )
-
-        # Token Adjacency
-        self.adj_estimator = None
-        if self.conf.get("adj_estimator"):
-            self.adj_estimator = AdjacencyEstimator(
-                kind="binary", normalize=False, tb_writer=self.tb_writer
-            )
-
-        # Load test fold if needed (finetuning)
-        if self.conf.get("test_fold") is not None:
-            fold = np.load(
-                os.path.join(
-                    self.conf.get("data_path"),
-                    "test_folds",
-                    f"partition-{self.conf.get('test_partition')}",
-                    f"fold-{self.conf.get('test_fold')}.npy",
-                )
-            )
-            self.test_fold = tf.constant(fold)
-
-        # Load vocabularies
-        self.hosts_vocabulary = (
-            open(
-                os.path.join(self.conf.get("data_path"), "vocab", "hosts_vocab.txt"),
-                "r",
-            )
-            .read()
-            .split("\n")
-        )
-        self.domains_vocabulary = (
-            open(
-                os.path.join(self.conf.get("data_path"), "vocab", "domains_vocab.txt"),
-                "r",
-            )
-            .read()
-            .split("\n")
-        )
-
-        # NOTE if max_tokens, I am trimming both hosts and domains to max_tokens;
-        # in theory hosts are a lot less problematic and could be left untrimmed
-        if self.conf.get("max_tokens"):
-            self.hosts_vocabulary = self.hosts_vocabulary[: self.conf.get("max_tokens")]
-            self.domains_vocabulary = self.domains_vocabulary[
-                : self.conf.get("max_tokens")
-            ]
-            # If I truncate, I have to add back the special ones that are now excluded
-            self.hosts_vocabulary.append("<PAD>")
-            self.domains_vocabulary.append("<PAD>")
-            print(
-                f"Truncating the vocabulary to the first {self.conf.get('max_tokens')} tokens."
-            )
-
-        self.hosts_vocabulary = tf.constant(self.hosts_vocabulary)
-        self.domains_vocabulary = tf.constant(self.domains_vocabulary)
-
-        # Token Indexes Lookup
-        self.hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.hosts_vocabulary,
-            num_oov_indices=1,
-            name="hosts_lookup",
-        )
-        self.inverse_hosts_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.hosts_vocabulary,
-            num_oov_indices=1,
-            invert=True,
-            name="inverse_hosts_lookup",
-        )
-        self.domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.domains_vocabulary,
-            num_oov_indices=1,
-            name="domains_lookup",
-        )
-        self.inverse_domains_lookup = tf.keras.layers.StringLookup(
-            vocabulary=self.domains_vocabulary,
-            num_oov_indices=1,
-            invert=True,
-            name="inverse_domains_lookup",
-        )
-        self.nhosts = self.hosts_lookup.vocabulary_size()
-        self.ndomains = self.domains_lookup.vocabulary_size()
-
-        # Tokens Embeddings
-        self.host_embeddings = tf.keras.layers.Embedding(
-            input_dim=self.nhosts,
-            output_dim=self.conf["dim"],
-            input_length=self.conf["seqlen"],
-            name="host_embeddings",
-        )
-        self.domain_embeddings = tf.keras.layers.Embedding(
-            input_dim=self.ndomains,
-            output_dim=self.conf["dim"],
-            input_length=self.conf["seqlen"],
-            name="domain_embeddings",
-        )
-
-        # Batch normalization
-        self.bn = tf.keras.layers.BatchNormalization()
-
-        # MHGAT blocks
-        self.blocks = [
-            MHGAT_Block(
-                n_heads=self.conf["n_heads"],
-                emb_dim=self.conf["dim"]
-                * (
-                    1 + self.conf.get("concat_hosts")
-                ),  # if --concat-hosts, the size of internal layers is doubled
-                block_id=b,
-                tensorboard=self.conf["tensorboard"],
-                tb_writer=self.tb_writer,
-                name=f"MHGAT_Block_{b}",
-            )
-            for b in range(self.conf["blocks"])
-        ]
-
-        # MLM softmax classifier
-        self.masked_classifier = FF(
-            [self.conf["dim"], self.ndomains],
-            [None, "softmax"],
-            name="softmax_layer",
-        )
-
-        # downstream task softmax classifier
-        self.downstream_classifier = None
-
     def call(self, inputs, training=None, **kwargs):
         # Take host and domain tokens from the given sequence
         hosts = self.slice_hosts(inputs)  # [B,L,1]
@@ -381,10 +372,7 @@ class DNS_GT(tf.keras.Model):
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
 
         # <----------------------- DEBUG: monitor some embeddings on tensorboard
-        if self.tb_writer and tf.math.equal(
-            tf.math.floormod(self.step, tf.constant(100, dtype=tf.int64)),
-            tf.constant(0, dtype=tf.int64),
-        ):
+        if self.tb_manager.hot:
             # Retrieve embeddings
             pad_emb = self.domain_embeddings(self.domains_lookup(tf.constant(b"<PAD>")))
             unk_emb = self.domain_embeddings(
@@ -414,20 +402,15 @@ class DNS_GT(tf.keras.Model):
             )
 
             # Write the images
-            with self.tb_writer.as_default():
-                tf.summary.image("<PAD>", pad_emb, step=self.step)
-                tf.summary.image("[UNK]", unk_emb, step=self.step)
-                tf.summary.image("<MASK>", mask_emb, step=self.step)
-                tf.summary.image(
-                    "edge-mqtt.facebook.com (most common)",
-                    most_common_emb,
-                    step=self.step,
-                )
-                tf.summary.image(
-                    "edge-chat.p.facebook.com (not common)",
-                    similar_but_not_common_emb,
-                    step=self.step,
-                )
+            self.tb_manager.image("<PAD>", pad_emb)
+            self.tb_manager.image("[UNK]", unk_emb)
+            self.tb_manager.image("<MASK>", mask_emb)
+            self.tb_manager.image(
+                "edge-mqtt.facebook.com (most common)", most_common_emb
+            )
+            self.tb_manager.image(
+                "edge-chat.p.facebook.com (not common)", similar_but_not_common_emb
+            )
         # --------------------------------------------------------------------->
 
         # Mask the tokens if required
@@ -453,7 +436,7 @@ class DNS_GT(tf.keras.Model):
         host_indexes = self.hosts_lookup(hosts)
 
         # set adjacency to 1 everywhere except for <PAD>, for which it's set to 0
-        adj = tf.einsum(
+        pad_adj = tf.einsum(
             "bi,bj->bij",
             tf.cast(tf.not_equal(domains, b"<PAD>"), tf.float32),
             tf.cast(tf.not_equal(domains, b"<PAD>"), tf.float32),
@@ -465,14 +448,16 @@ class DNS_GT(tf.keras.Model):
         # and these values can be different because of the dropout.
         # with self-loops on the <PAD>s, they are truly disconnected
         I = tf.cast(tf.eye(tf.shape(domains)[-1]), tf.bool)
-        adj = tf.cast(tf.math.logical_or(tf.cast(adj, tf.bool), I), tf.int32)
+        pad_adj = tf.cast(
+            tf.math.logical_or(tf.cast(pad_adj, tf.bool), I), tf.int32
+        )  # [B,L,L]
 
         # compute graph topologies
-        if self.adj_estimator is not None:
-            hierarchical_adj = self.adj_estimator(domains)
-            adj = tf.math.logical_and(
-                tf.cast(adj, tf.bool), tf.cast(hierarchical_adj, tf.bool)
-            )
+        adjs = []
+        for adj_estimator in self.adj_estimators:
+            # intersect pad_adj with graph topologies
+            adjs.append(tf.math.multiply(pad_adj, adj_estimator(domains)))
+        adjs = tf.stack(adjs, axis=1)  # [B,n_adjs,L,L]
 
         # Retrieve embedding for each token index
         e_d = self.domain_embeddings(domain_indexes)
@@ -507,10 +492,10 @@ class DNS_GT(tf.keras.Model):
         for block in self.blocks:
             if self.finetuning and self.conf.get("freeze"):
                 emb = tf.stop_gradient(
-                    block(emb, adj, step=self.step)
+                    block(emb, adjs)
                 )  # NOTE workaround for the (--load, --gpu all) finetuned bug
             else:
-                emb = block(emb, adj, step=self.step)
+                emb = block(emb, adjs)
 
         # Force initializiation of weights for both layers by calling them both even if not needed;
         # this prevents problems when loading weights
@@ -593,21 +578,17 @@ class DNS_GT(tf.keras.Model):
         gradients = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        if self.conf.get("tensorboard"):
-            with self.tb_writer.as_default():
-                tf.summary.scalar("train_loss", loss, step=self.step)
+        # if self.conf.get("tensorboard"):
+        if self.tb_manager.active:
+            self.tb_manager.scalar("train_loss", loss)
 
-        if self.conf.get("tensorboard") and self.step % 10 == 0:
+        if self.conf.tb_manager.active:
             for l in self.layers:
-                # print(l)
                 for i, w in enumerate(l.get_weights()):
-                    # print(w.shape)
-                    with self.tb_writer.as_default():
-                        tf.summary.histogram(f"{l.name}/{i}", w, step=self.step)
-                # print()
+                    self.tb_manager.histogram(f"{l.name}/{i}", w)
 
         # TensorBoard -- Increment step
-        self.step.assign_add(tf.constant(1, dtype=tf.int64))
+        self.tb_manager.step()
 
         return loss
 
@@ -657,9 +638,8 @@ class DNS_GT(tf.keras.Model):
                 self.dist_strategy.num_replicas_in_sync,
             )
 
-        if self.conf.get("tensorboard"):
-            with self.tb_writer.as_default():
-                tf.summary.scalar("val_loss", loss, step=self.step)
+        if self.tb_manager.active:
+            self.tb_manager.scalar("val_loss", loss)
 
         return loss
 
@@ -702,7 +682,7 @@ class DNS_GT(tf.keras.Model):
 
 class MHGAT_Block(tf.keras.layers.Layer):
     @tf.function
-    def tb_log_image(self, name, tensor, step, minmax=False):
+    def tb_log_image(self, name, tensor, minmax=False):
         # if the channel (color) axis is missing, add it with dim 1 (greyscale)
         tensor = tf.cond(
             tf.math.equal(tf.rank(tensor), tf.constant(3)),
@@ -718,8 +698,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         )
 
         # write image
-        with self.tb_writer.as_default():
-            tf.summary.image(name=name, data=tensor, step=step)
+        self.tb_manager.image(name, tensor)
 
     @tf.function
     def minmax_norm(self, tensor):
@@ -733,7 +712,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # TensorBoard Init
         self.tensorboard = kwargs.get("tensorboard", False)
-        self.tb_writer = kwargs.get("tb_writer", None)
+        self.tb_manager = kwargs.get("tb_manager", None)
         self.block_id = kwargs.get("block_id", 0)
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
@@ -781,7 +760,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # Residual Dropout
         self.dropout = tf.keras.layers.Dropout(0.1)
 
-    def call(self, inputs, adj, **kwargs):
+    def call(self, inputs, adjs, **kwargs):
         # inputs (embeddings) [B, L, emb_dim]
         Q = tf.stack(
             [Wqi(inputs) for Wqi in self.Wq], axis=1
@@ -802,35 +781,35 @@ class MHGAT_Block(tf.keras.layers.Layer):
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
         )  # [B, n_heads, L, L]
 
-        if self.tb_writer and self.step % 100 == 0:
+        if self.tb_manager.hot:
             self.tb_log_image(
                 f"MHGAT{self.block_id}/head0-scores-before-softmax",
                 scores[:, 0],
-                step=self.step,
                 minmax=True,
             )
 
-        # <--- Inject adjacency mask here (Vaswani says it's done after normalization)
+        # <--- Inject adjacency masks here (Vaswani says it's done after normalization)
+        # TODO this row forces adj to be [B,L,L]. Expand this code to make it work with
+        # multiple adjs, ie. tensor [B,n_adjs,L,L]
+        adj = tf.gather(adjs, 0, axis=1)
         # [B, L, L] -> [B, n_heads, L, L]
         adj = tf.expand_dims(adj, axis=1)
         adj = tf.tile(adj, [1, tf.shape(scores)[1], 1, 1])
 
-        if self.tb_writer and self.step % 100 == 0:
+        if self.tb_manager.hot:
             self.tb_log_image(
                 f"MHGAT{self.block_id}/adj",
                 tf.cast(adj[:, 0], tf.float64),
-                step=self.step,
             )  # adj is the same for all heads
         # --->
 
         # Calculate softmax masking disconnected scores
         scores = self.softmax(scores, mask=adj)  # [B, n_heads, L, L] attention weights
 
-        if self.tb_writer and self.step % 100 == 0:
+        if self.tb_manager.hot:
             self.tb_log_image(
                 f"MHGAT{self.block_id}/head0-softmax-scores",
                 scores[:, 0],
-                step=self.step,
                 minmax=True,
             )
 
@@ -858,27 +837,18 @@ class MHGAT_Block(tf.keras.layers.Layer):
         result = self.bn2(result)
 
         # Tensorboard -- Write activation
-        if self.tb_writer and self.step % 100 == 0:
+        if self.tb_manager.hot:
             # Visualize the first word of the first sequence as it evolves through blocks
-            with self.tb_writer.as_default():
-                result_image = DNS_GT.draw_scatter(
-                    tf.identity(result[0, 0])
-                )  # [emb_dim] -> [1, h, w, 3]
-                tf.summary.image(
-                    name=f"{self.block_id}-firstquery",
-                    data=result_image,
-                    step=self.step,
-                )
+            result_image = DNS_GT.draw_scatter(
+                tf.identity(result[0, 0])
+            )  # [emb_dim] -> [1, h, w, 3]
+            self.tb_manager.image(f"{self.block_id}-firstquery", result_image)
 
             # Visualize the same thing but with heatmap
             self.tb_log_image(
                 f"{self.block_id}-activation-heatmap",
                 result,
-                self.step,
                 minmax=True,
             )
-
-        # Tensorboard -- increment step
-        self.step.assign_add(tf.constant(1, dtype=tf.int64))
 
         return result

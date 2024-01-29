@@ -1,8 +1,9 @@
 # How to use the data_loading.py module
 
+(Assuming you are in src/)
 Import the module
 ```
-from data_loader import *
+from utils.data_loading import *
 ```
 
 Set the queries folder
@@ -18,7 +19,7 @@ strategy = ClusterSequencingStrategy()
 
 Create a generator using that strategy
 ```
-generator = SequenceGenerator(queries_folder, strategy, 32, False, True)
+generator = SequenceGenerator(queries_folder, strategy, seqlen=32, group_by_host=True)
 ```
 
 The strategy can also be changed later with set_strategy()
@@ -34,7 +35,7 @@ queries = np.load(
     os.path.join(queries_folder, "20160423_235403.npy"), allow_pickle=True
 )
 seqs = strategy.make_sequences(
-    queries, seqlen=32, include_class=False, group_by_host=True
+    queries, seqlen=32, group_by_host=True
 )
 print(seqs)
 ```

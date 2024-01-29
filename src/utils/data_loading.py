@@ -16,8 +16,9 @@ class SequencingStrategy(Protocol):
     def make_sequences(
         queries: np.ndarray[Any, np.dtype[object]],
         seqlen: int,
-        include_class: bool,
         group_by_host: bool,
+        *,
+        include_class: bool = None,
     ) -> np.ndarray[Any, object]:
         raise NotImplementedError()
 
@@ -44,10 +45,10 @@ class SequenceGenerator:
         self,
         input_folder: str,
         sequencing_strategy: SequencingStrategy,
-        task: str,
         seqlen: int,
-        include_class: bool,
         group_by_host: bool,
+        task: str = None,
+        include_class: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize a SequenceGenerator object.
@@ -127,8 +128,8 @@ class SequenceGenerator:
             seqs = self.sequencing_strategy.make_sequences(
                 queries,
                 self.seqlen,
-                self.include_class,
                 self.group_by_host,
+                include_class=self.include_class,
                 **self.kwargs,
             )
 
@@ -177,8 +178,9 @@ class FixedSequencingStrategy:
         self,
         queries: np.ndarray,
         seqlen: int,
-        include_class: bool,
         group_by_host: bool,
+        *,
+        include_class: bool = None,
         **kwargs: Any,
     ) -> np.ndarray:
         # get kwargs
@@ -229,8 +231,9 @@ class ClusterSequencingStrategy:
         self,
         queries: np.ndarray,
         seqlen: int,
-        include_class: bool,
         group_by_host: bool,
+        *,
+        include_class: bool = None,
         **kwargs: Any,
     ) -> np.ndarray:
         seqs = []
@@ -319,8 +322,9 @@ class TimeWindowStrategy:
         self,
         queries: np.ndarray,
         seqlen: int,
-        include_class: bool,
         group_by_host: bool,
+        *,
+        include_class: bool = None,
         **kwargs: Any,
     ) -> np.ndarray:
         verbose = kwargs.get("verbose", False)

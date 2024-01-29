@@ -582,7 +582,7 @@ class DNS_GT(tf.keras.Model):
         if self.tb_manager.active:
             self.tb_manager.scalar("train_loss", loss)
 
-        if self.conf.tb_manager.active:
+        if self.tb_manager.active:
             for l in self.layers:
                 for i, w in enumerate(l.get_weights()):
                     self.tb_manager.histogram(f"{l.name}/{i}", w)

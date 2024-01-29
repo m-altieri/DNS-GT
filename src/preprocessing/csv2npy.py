@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """Conversion of preprocessed CSV files into NPY arrays ready for 
 the training and evaluation pipeline.
 """
@@ -12,7 +10,6 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "utils"))
 from tokenizers import TrivialTokenizer, SubdomainTokenizer

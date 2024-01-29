@@ -51,7 +51,7 @@ if not os.path.exists(artifacts_path := os.path.join(data_path, "artifacts")):
 
 # -- Preprocessing
 for filename in os.listdir(tcsv_path):
-    print(f"Analysing {filename}...")
+    print(f"Preprocessing {filename}...")
 
     # check whether the file is not a csv
     if os.path.splitext(filename)[1] != ".csv":

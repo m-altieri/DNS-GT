@@ -5,7 +5,7 @@ import tensorflow as tf
 tf.random.set_seed(42)
 from lib.tf_matplotlib import tfmpl
 
-from utils.nn import FF
+import utils.nn
 from utils.constants import Constants
 from utils.distribute import DummyStrategy
 from utils.graphs import (
@@ -38,10 +38,13 @@ class DNS_GT(tf.keras.Model):
         self.tb_manager = TBManager(
             f"../tensorboard/{conf.get('model')}",
             self.conf.get("run_name"),
-            tmp=self.conf["quick_tb"],
-            interval=1 if self.conf["demo"] else None,
-            active=self.conf["tensorboard"],
+            tmp=self.conf.get("quick_tb"),
+            interval=1 if self.conf.get("demo") else None,
+            enabled=self.conf.get("tensorboard"),
+            verbose=self.conf.get("verbose"),
         )
+        if self.conf.get("tensorboard"):
+            self.tb_manager.run()
 
         # Token Adjacency
         self.adj_estimators: list[AdjacencyEstimator] = []
@@ -148,7 +151,7 @@ class DNS_GT(tf.keras.Model):
         # MHGAT blocks
         self.blocks = [
             MHGAT_Block(
-                n_heads=self.conf["n_heads"],
+                heads=self.conf["heads"],
                 emb_dim=self.conf["dim"]
                 * (
                     1 + self.conf.get("concat_hosts")
@@ -162,7 +165,7 @@ class DNS_GT(tf.keras.Model):
         ]
 
         # MLM softmax classifier
-        self.masked_classifier = FF(
+        self.masked_classifier = utils.nn.FF(
             [self.conf["dim"], self.ndomains],
             [None, "softmax"],
             name="softmax_layer",
@@ -314,7 +317,7 @@ class DNS_GT(tf.keras.Model):
                 "b": Constants._NCLASSES_BOTNET_DETECTION,
             }[self.conf.get("labeling")]
 
-            self.downstream_classifier = FF(
+            self.downstream_classifier = utils.nn.FF(
                 [self.conf["dim"], nclasses],
                 [None, "softmax"],
                 name="classification_layer",
@@ -372,7 +375,7 @@ class DNS_GT(tf.keras.Model):
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
 
         # <----------------------- DEBUG: monitor some embeddings on tensorboard
-        if self.tb_manager.hot:
+        if self.tb_manager.is_hot():
             # Retrieve embeddings
             pad_emb = self.domain_embeddings(self.domains_lookup(tf.constant(b"<PAD>")))
             unk_emb = self.domain_embeddings(
@@ -578,11 +581,10 @@ class DNS_GT(tf.keras.Model):
         gradients = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        # if self.conf.get("tensorboard"):
-        if self.tb_manager.active:
+        if self.tb_manager.enabled:
             self.tb_manager.scalar("train_loss", loss)
 
-        if self.tb_manager.active:
+        if self.tb_manager.enabled:
             for l in self.layers:
                 for i, w in enumerate(l.get_weights()):
                     self.tb_manager.histogram(f"{l.name}/{i}", w)
@@ -638,12 +640,13 @@ class DNS_GT(tf.keras.Model):
                 self.dist_strategy.num_replicas_in_sync,
             )
 
-        if self.tb_manager.active:
+        if self.tb_manager.enabled:
             self.tb_manager.scalar("val_loss", loss)
 
         return loss
 
     def _predict(self, seq, mask=None):
+        self.tb_manager.force(True)
         in_fold_mask = None
         if self.finetuning:
             # seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
@@ -676,38 +679,12 @@ class DNS_GT(tf.keras.Model):
                 tf.boolean_mask(pred, domains_mask),
                 regularization_losses=self.losses,
             )
-
+        self.tb_manager.force(False)
         return pred, 0.0, in_fold_mask
 
 
 class MHGAT_Block(tf.keras.layers.Layer):
-    @tf.function
-    def tb_log_image(self, name, tensor, minmax=False):
-        # if the channel (color) axis is missing, add it with dim 1 (greyscale)
-        tensor = tf.cond(
-            tf.math.equal(tf.rank(tensor), tf.constant(3)),
-            lambda: tf.expand_dims(tensor, -1),
-            lambda: tensor,
-        )
-
-        # if minmax, apply minmax normalization to the image
-        tensor = tf.cond(
-            tf.constant(minmax),
-            lambda: self.minmax_norm(tensor),
-            lambda: tensor,
-        )
-
-        # write image
-        self.tb_manager.image(name, tensor)
-
-    @tf.function
-    def minmax_norm(self, tensor):
-        return tf.divide(
-            tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
-            tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
-        )
-
-    def __init__(self, n_heads, emb_dim, **kwargs):
+    def __init__(self, heads, emb_dim, **kwargs):
         super().__init__()
 
         # TensorBoard Init
@@ -718,23 +695,23 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Configuration
         self._name = kwargs.get("name") or self.name
-        self.n_heads = tf.constant(n_heads)
+        self.heads = tf.constant(heads)
         self.emb_dim = tf.constant(emb_dim)
-        self.head_dim = tf.math.floordiv(self.emb_dim, self.n_heads)
+        self.head_dim = tf.math.floordiv(self.emb_dim, self.heads)
         self.nonlinear_stretch = tf.constant(4)
 
         # Query, Key and Value matrices (multi-head)
         self.Wq = [
             tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wq/h{i}")
-            for i in range(self.n_heads)
+            for i in range(self.heads)
         ]
         self.Wk = [
             tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wk/h{i}")
-            for i in range(self.n_heads)
+            for i in range(self.heads)
         ]
         self.Wv = [
             tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wv/h{i}")
-            for i in range(self.n_heads)
+            for i in range(self.heads)
         ]
         self.Wo = tf.keras.layers.Dense(self.emb_dim, name=f"MHGAT{self.block_id}-Wo")
 
@@ -764,25 +741,40 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # inputs (embeddings) [B, L, emb_dim]
         Q = tf.stack(
             [Wqi(inputs) for Wqi in self.Wq], axis=1
-        )  # [B, n_heads, L, head_dim]
+        )  # [B, heads, L, head_dim]
         K = tf.stack(
             [Wki(inputs) for Wki in self.Wk], axis=1
-        )  # [B, n_heads, L, head_dim]
+        )  # [B, heads, L, head_dim]
         V = tf.stack(
             [Wvi(inputs) for Wvi in self.Wv], axis=1
-        )  # [B, n_heads, L, head_dim]
+        )  # [B, heads, L, head_dim]
 
-        scores = tf.linalg.matmul(
-            Q, tf.transpose(K, (0, 1, 3, 2))
-        )  # [B, n_heads, L, L]
+        scores = tf.linalg.matmul(Q, tf.transpose(K, (0, 1, 3, 2)))  # [B, heads, L, L]
+
+        if self.tb_manager.enabled:
+            print(f"===== Block {self.block_id} =====")
+            print("Scores before normalization")
+            print(scores[0, 0])
+        if self.tb_manager.is_hot():
+            self.tb_manager.image(
+                f"MHGAT{self.block_id}/head0-scores-before-normalization",
+                scores[:, 0],
+                minmax=True,
+            )
 
         # normalize scores
+        # >> Old normalization (Vaswani-style)
         scores = tf.math.divide(
             scores, tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
-        )  # [B, n_heads, L, L]
+        )  # [B, heads, L, L]
+        # >> New normalizazion
+        # scores = utils.nn.minmax(scores)
 
-        if self.tb_manager.hot:
-            self.tb_log_image(
+        if self.tb_manager.enabled:
+            print("Scores before softmax (after normalization)")
+            print(scores[0, 0])
+        if self.tb_manager.is_hot():
+            self.tb_manager.image(
                 f"MHGAT{self.block_id}/head0-scores-before-softmax",
                 scores[:, 0],
                 minmax=True,
@@ -792,32 +784,38 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # TODO this row forces adj to be [B,L,L]. Expand this code to make it work with
         # multiple adjs, ie. tensor [B,n_adjs,L,L]
         adj = tf.gather(adjs, 0, axis=1)
-        # [B, L, L] -> [B, n_heads, L, L]
+        # [B, L, L] -> [B, heads, L, L]
         adj = tf.expand_dims(adj, axis=1)
         adj = tf.tile(adj, [1, tf.shape(scores)[1], 1, 1])
 
-        if self.tb_manager.hot:
-            self.tb_log_image(
+        if self.tb_manager.enabled:
+            print("Adj")
+            print(adj[0, 0])
+        if self.tb_manager.is_hot():
+            self.tb_manager.image(
                 f"MHGAT{self.block_id}/adj",
                 tf.cast(adj[:, 0], tf.float64),
             )  # adj is the same for all heads
         # --->
 
         # Calculate softmax masking disconnected scores
-        scores = self.softmax(scores, mask=adj)  # [B, n_heads, L, L] attention weights
+        scores = self.softmax(scores, mask=adj)  # [B, heads, L, L] attention weights
 
-        if self.tb_manager.hot:
-            self.tb_log_image(
+        if self.tb_manager.enabled:
+            print("Scores after softmax")
+            print(scores[0, 0])
+        if self.tb_manager.is_hot():
+            self.tb_manager.image(
                 f"MHGAT{self.block_id}/head0-softmax-scores",
                 scores[:, 0],
                 minmax=True,
             )
 
         # Calculate weighted values
-        result = tf.linalg.matmul(scores, V)  # [B, n_heads, L, head_dim]
+        result = tf.linalg.matmul(scores, V)  # [B, heads, L, head_dim]
         result = tf.concat(
             tf.unstack(result, axis=1), axis=-1
-        )  # [B, L, n_heads*head_dim]
+        )  # [B, L, heads*head_dim]
 
         result = self.Wo(result)  # [B, L, emb_dim]
         result = self.dropout(result)  # Residual Dropout
@@ -837,7 +835,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         result = self.bn2(result)
 
         # Tensorboard -- Write activation
-        if self.tb_manager.hot:
+        if self.tb_manager.is_hot():
             # Visualize the first word of the first sequence as it evolves through blocks
             result_image = DNS_GT.draw_scatter(
                 tf.identity(result[0, 0])
@@ -845,7 +843,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
             self.tb_manager.image(f"{self.block_id}-firstquery", result_image)
 
             # Visualize the same thing but with heatmap
-            self.tb_log_image(
+            self.tb_manager.image(
                 f"{self.block_id}-activation-heatmap",
                 result,
                 minmax=True,

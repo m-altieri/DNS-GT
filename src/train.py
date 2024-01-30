@@ -182,6 +182,7 @@ def parse_args():
         action="store_true",
         help="Whether to compute domain graph topologies and use them in the attention.",
     )
+    argparser.add_argument("--heads", type=int, help="The number of attention heads.")
 
     args = argparser.parse_args()
 
@@ -588,14 +589,14 @@ def demo(model, conf, data):
         masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
 
         pred, loss, in_fold_mask = model._predict(seq, mask)
+        pred = np.squeeze(pred, axis=0)
 
         print(f"Seq index: {seq_idx + s}")
 
-        max_h_len = max([len(seq[0, q, 0]) for q in range(len(pred[0]))])
-        max_d_len = max([len(seq[0, q, 1]) for q in range(len(pred[0]))])
+        max_h_len = max([len(seq[0, q, 0]) for q in range(len(pred))])
+        max_d_len = max([len(seq[0, q, 1]) for q in range(len(pred))])
 
         if conf.get("finetune"):
-            pred = np.squeeze(pred, axis=0)
             for p, _ in enumerate(pred):
                 host, domain, label = seq[0, p]
 
@@ -615,8 +616,6 @@ def demo(model, conf, data):
                 )
             print(f"{Style.BRIGHT}Loss: {loss:.3f}{Style.RESET_ALL}")
         else:
-            pred = pred[0]
-
             for i in range(len(pred)):
                 # I am actually interested in what token the model considers, not what we pass as input (if the token is not in the vocabulary, it will be treated as <UNK>)
                 masked_host = model.inverse_hosts_lookup(

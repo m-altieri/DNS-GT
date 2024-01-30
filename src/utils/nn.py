@@ -23,3 +23,15 @@ class FF(tf.keras.layers.Layer):
         for l in self.dense_layers:
             x = l(x)
         return x
+
+
+@tf.function
+def minmax(tensor, new_min=0.0, new_max=1.0):
+    tensor = tf.divide(
+        tf.math.subtract(tensor, tf.math.reduce_min(tensor)),
+        tf.math.subtract(tf.math.reduce_max(tensor), tf.math.reduce_min(tensor)),
+    )
+    tensor = tf.math.add(
+        tf.math.multiply(tensor, tf.math.subtract(new_max, new_min)), new_min
+    )
+    return tensor

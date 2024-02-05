@@ -11,7 +11,7 @@ dim: 256
 p_mask: 0.08
 p_same: 0.01
 p_random: 0.01
-n_heads: 8
+heads: 8
 omega: 1.0
 blocks: 8
 quick_tb: false

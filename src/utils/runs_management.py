@@ -63,6 +63,7 @@ class RunManager:
         "start_from",
         "skip_predictions",
         "gpu",
+        "test_seq",
     }
 
     def __init__(

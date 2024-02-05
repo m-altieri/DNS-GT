@@ -9,19 +9,22 @@ import utils.nn
 
 class TBManager:
     def __init__(
-        self, tb_folder, run_name, tmp=False, interval=None, enabled=True, verbose=False
+        self, tb_folder, run_name, tmp=False, interval=None, enabled=True, verbose=False, port=None
     ):
         self.tb_folder = tb_folder
         self.run_name = run_name
         self.tmp = tmp
         DEFAULT_INTERVAL = 100
         self.interval = DEFAULT_INTERVAL if interval is None else interval
+        DEFAULT_PORT = 6006
+        self.port = DEFAULT_PORT if port is None else port
         self.enabled = enabled
         self.force_write = False
         self.verbose = verbose
         self.scalars = {}
         self.images = {}
         self.histograms = {}
+        self.texts = {}
 
         # set tensorboard path and create folders
         self.tb_path = None
@@ -51,14 +54,15 @@ class TBManager:
 
     def run(self):
         self.tb_instance = tb.program.TensorBoard()
-        self.tb_instance.configure(logdir=self.tb_path)
+        self.tb_instance.configure(logdir=self.tb_path, port=self.port)
         tb_url = self.tb_instance.launch()
         print(f"[INFO] TensorBoard instance launched at {tb_url}")
 
     def is_hot(self):
         if self.force_write:
             if self.enabled:
-                print("[DEBUG] TBManager is hot because it is forced.")
+                if self.verbose:
+                    print("[DEBUG] TBManager is hot because it is forced.")
             else:
                 print(
                     "[WARN] You are forcing TBManager to stay hot but it is not enabled."
@@ -141,6 +145,23 @@ class TBManager:
                 tf.summary.histogram(name, data, step=logging_step)
 
             self.histograms[name]["step"] = logging_step + 1
+
+    def text(self, name, data):
+        if self.enabled:
+            if name not in self.texts:
+                self.texts[name] = {"step": 0}
+
+            logging_step = self.texts[name]["step"]
+
+            if self.verbose:
+                print(
+                    f"[INFO] Writing text with name {name} (global step: {self.counter}, logging step: {logging_step})"
+                )
+
+            with self.tb_writer.as_default():
+                tf.summary.text(name, data, step=logging_step)
+
+            self.texts[name]["step"] = logging_step + 1
 
 
 @DeprecationWarning

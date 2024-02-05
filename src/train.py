@@ -27,102 +27,28 @@ from utils.formatting import indent
 from utils.evaluation import Evaluation
 from utils.distribute import DummyStrategy
 from utils.runs_management import RunManager
+from utils.constants import CliArgsDefaults
 
 
 def parse_args():
     argparser = argparse.ArgumentParser()
+
+    # Positional arguments
     argparser.add_argument("model", action="store", default="DNS-GT")
+
+    # Keyword arguments
     argparser.add_argument(
-        "--es",
+        "--adj-estimator",
         action="store_true",
-        help="Early Stopping",
+        help="Whether to compute domain graph topologies and use them in the attention.",
     )
-    argparser.add_argument(
-        "--start-from",
-        action="store",
-        help="Specify which run to use as a starting point for training.",
-    )
-    argparser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Log debug information",
-    )
-    argparser.add_argument(
-        "--epochs",
-        action="store",
-        type=int,
-        help="Number of training epochs",
-    )
+    argparser.add_argument("--blocks", action="store", type=int)
     argparser.add_argument("--bs", action="store", type=int, help="Batch size")
-    argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
+    argparser.add_argument("--concat-hosts", action="store_true")
     argparser.add_argument(
         "--demo",
         action="store_true",
         help="Used for debugging purposes",
-    )
-    argparser.add_argument(
-        "--test-seq",
-        action="store",
-        type=int,
-        help="Used for debugging purposes; choose the test sequence index",
-    )
-    argparser.add_argument(
-        "--seqlen",
-        action="store",
-        type=int,
-        help="Maximum sequence length",
-    )
-    argparser.add_argument(
-        "--stride",
-        action="store",
-        type=int,
-        help="Stride between sequences (how many queries to shift by)",
-    )
-    argparser.add_argument(
-        "--include-start",
-        action="store_true",
-        help="Whether to include <START> as the first token of each sequence (total length is unaffected)",
-    )
-    argparser.add_argument(
-        "--tiny",
-        action="store_true",
-        help="Use for debugging purposes, to use a tiny portion of the dataset to get faster feedback.",
-    )
-    argparser.add_argument(
-        "--gpu",
-        action="store",
-        nargs="+",
-        type=int,
-        default=[0],
-        help="A list of GPU indexes (eg. --gpu 0 2 4). "
-        + "If it is a single integer (eg. --gpu 3), run on a single specific GPU. "
-        + "If it multiple integers (eg. --gpu 2 4), distribute the execution on the specified GPUs. "
-        + "If it is -1 or contains -1, distribute on all GPUs. All other values are invalid."
-        + "GPU indexes start from 0.",
-    )
-    argparser.add_argument("--tensorboard", "--tb", action="store_true")
-    argparser.add_argument(
-        "--quick-tb",
-        action="store_true",
-        help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
-    )
-    argparser.add_argument("--eager", action="store_true")
-    argparser.add_argument("--blocks", action="store", type=int)
-    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
-    argparser.add_argument(
-        "-r",
-        "--run-name",
-        action="store",
-        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
-        help="Name used when saving to file. Used for loading a previous run for inference or further training.",
-    )
-    argparser.add_argument("--omega", action="store", type=float)
-    argparser.add_argument("--shuffle", action="store_true")
-    argparser.add_argument(
-        "--type",
-        action="store",
-        help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
     )
     argparser.add_argument(
         "--dim",
@@ -142,11 +68,106 @@ def parse_args():
         help="Freeze all layers except the classification ones. Only has effect if --finetune.",
     )
     argparser.add_argument(
-        "--test-partition",
-        type=int,
-        help="Test partition to choose during finetuning. "
+        "--from-pretrained",
+        "--from-pt",
+        action="store_true",
+        help="Whether to load weights from existing finetuned model or from pretrained model. "
         + "Only has effect if --finetune.",
     )
+    argparser.add_argument("--eager", action="store_true")
+    argparser.add_argument(
+        "--epochs",
+        action="store",
+        type=int,
+        help="Number of training epochs",
+    )
+    argparser.add_argument(
+        "--es",
+        action="store_true",
+        help="Early Stopping",
+    )
+    argparser.add_argument("--evaluate", action="store_true")
+    argparser.add_argument(
+        "--gpu",
+        action="store",
+        nargs="+",
+        type=int,
+        default=CliArgsDefaults.GPU,
+        help="A list of GPU indexes (eg. --gpu 0 2 4). "
+        + "If it is a single integer (eg. --gpu 3), run on a single specific GPU. "
+        + "If it multiple integers (eg. --gpu 2 4), distribute the execution on the specified GPUs. "
+        + "If it is -1 or contains -1, distribute on all GPUs. All other values are invalid."
+        + "GPU indexes start from 0.",
+    )
+    argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
+    argparser.add_argument("--heads", type=int, help="The number of attention heads.")
+    argparser.add_argument(
+        "--include-start",
+        action="store_true",
+        help="Whether to include <START> as the first token of each sequence (total length is unaffected)",
+    )
+    argparser.add_argument(
+        "-l",
+        "--labeling",
+        choices=["m", "b"],
+        help="The downstream task: m for malicious domain classification or b for botnet detection.",
+    )
+    argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
+    argparser.add_argument("--max-tokens", action="store", type=int)  # Deprecating
+    argparser.add_argument("--omega", action="store", type=float)
+    argparser.add_argument(
+        "--p-mask",
+        type=float,
+        help="The probability to mask a token by replacing it with <MASK>.",
+    )
+    argparser.add_argument(
+        "--p-random",
+        type=float,
+        help="The probability to mask a token by replacing it with a random token.",
+    )
+    argparser.add_argument(
+        "--p-same",
+        type=float,
+        help="The probability to mask a token by replacing it with itself.",
+    )
+    argparser.add_argument(
+        "--quick-tb",  # Slow deprecating. With the new TBManager workflow it shouldn't be needed
+        action="store_true",
+        help="Whether to reutilize the same TensorBoard folder. Allows for quicker debugging.",
+    )
+    argparser.add_argument(
+        "-r",
+        "--run-name",
+        action="store",
+        default=f'model-{time.strftime("%y%m%d-%H%M%S", time.localtime())}',
+        help="Name used when saving to file. Used for loading a previous run for inference or further training.",
+    )
+    argparser.add_argument(
+        "--seq-strategy",
+        action="store",
+        choices=["cluster", "fixed", "time"],
+    )
+    argparser.add_argument(
+        "--seqlen",
+        action="store",
+        type=int,
+        help="Maximum sequence length",
+    )
+    argparser.add_argument("--shuffle", action="store_true")
+    argparser.add_argument("--skip-predictions", action="store_true")
+    argparser.add_argument(
+        "--start-from",
+        action="store",
+        help="Specify which run to use as a starting point for training.",
+    )
+    argparser.add_argument(
+        "--stride",
+        action="store",
+        type=int,
+        help="Stride between sequences (how many queries to shift by)",
+    )
+    argparser.add_argument("--tb-port", type=int, help="The port to serve TB onto.")
+    argparser.add_argument("--tensorboard", "--tb", action="store_true")
     argparser.add_argument(
         "--test-fold",
         type=int,
@@ -156,33 +177,33 @@ def parse_args():
         + "Only has effect if --finetune.",
     )
     argparser.add_argument(
-        "--from-pretrained",
-        "--from-pt",
-        action="store_true",
-        help="Whether to load weights from existing finetuned model or from pretrained model. "
+        "--test-partition",
+        type=int,
+        help="Test partition to choose during finetuning. "
         + "Only has effect if --finetune.",
     )
-    argparser.add_argument("--max-tokens", action="store", type=int)
-    argparser.add_argument("--concat-hosts", action="store_true")
     argparser.add_argument(
-        "--seq-strategy",
+        "--test-seq",
         action="store",
-        choices=["cluster", "fixed", "time"],
-    )
-    argparser.add_argument("--evaluate", action="store_true")
-    argparser.add_argument("--skip-predictions", action="store_true")
-    argparser.add_argument(
-        "-l",
-        "--labeling",
-        choices=["m", "b"],
-        help="The downstream task: m for malicious domain classification or b for botnet detection.",
+        type=int,
+        help="Used for debugging purposes; choose the test sequence index",
     )
     argparser.add_argument(
-        "--adj-estimator",
+        "--tiny",
         action="store_true",
-        help="Whether to compute domain graph topologies and use them in the attention.",
+        help="Use for debugging purposes, to use a tiny portion of the dataset to get faster feedback.",
     )
-    argparser.add_argument("--heads", type=int, help="The number of attention heads.")
+    argparser.add_argument(
+        "--type",
+        action="store",
+        help="Model type. It is used by model classes that have multiple subtypes, like Word2Vec.",
+    )
+    argparser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log debug information",
+    )
 
     args = argparser.parse_args()
 
@@ -192,6 +213,13 @@ def parse_args():
     if args.evaluate:
         args.finetune = True
         args.epochs = 0
+
+    if args.demo:
+        args.eager = True
+        args.tensorboard = True
+        args.gpu = CliArgsDefaults.GPU
+        args.distribute = False
+        args.bs = 1
 
     return args
 
@@ -535,12 +563,6 @@ def main():
 
 
 def demo(model, conf, data):
-    conf["eager"] = True
-    conf["tensorboard"] = True
-    conf["gpu"] = None
-    conf["distribute"] = False
-    conf["bs"] = 1
-
     print(
         f"""{Style.BRIGHT}
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -561,7 +583,15 @@ def demo(model, conf, data):
     )
 
     seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
-    seqs = data.unbatch().skip(seq_idx).shuffle(1000).take(100).as_numpy_iterator()
+    seqs = (
+        data.unbatch()
+        .skip(seq_idx)
+        .shuffle(
+            1 + conf.get("shuffle") * CliArgsDefaults.SHUFFLE_BS
+        )  # shuffle batch size is 1 if not --shuffle (1 means no shuffling), or the default amount if --shuffle
+        .take(100)
+        .as_numpy_iterator()
+    )
     seqs = np.array([s for s in seqs], dtype=object)
     show_more = True
     s = 0
@@ -607,9 +637,7 @@ def demo(model, conf, data):
                 color = (
                     Fore.CYAN
                     if in_fold_mask[0, p]
-                    else Style.DIM
-                    if domain == "<PAD>"
-                    else ""
+                    else Style.DIM if domain == "<PAD>" else ""
                 )
                 print(
                     f"{color}{host:<{max_h_len}} {domain:<{max_d_len}} ({label}) -> {np.argmax(pred[p], axis=-1)} ({np.max(pred[p], axis=-1):.2f}){Style.RESET_ALL}"

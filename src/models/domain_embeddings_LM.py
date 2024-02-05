@@ -6,6 +6,7 @@ tf.random.set_seed(42)
 from lib.tf_matplotlib import tfmpl
 
 import utils.nn
+from utils.logging import TBManager
 from utils.constants import Constants
 from utils.distribute import DummyStrategy
 from utils.graphs import (
@@ -13,7 +14,6 @@ from utils.graphs import (
     TrivialAdjacencyEstimator,
     HierarchicalSimilarityEstimator,
 )
-from utils.logging import TBManager
 
 
 class DNS_GT(tf.keras.Model):
@@ -42,6 +42,7 @@ class DNS_GT(tf.keras.Model):
             interval=1 if self.conf.get("demo") else None,
             enabled=self.conf.get("tensorboard"),
             verbose=self.conf.get("verbose"),
+            port=self.conf.get("tb_port"),
         )
         if self.conf.get("tensorboard"):
             self.tb_manager.run()
@@ -173,9 +174,6 @@ class DNS_GT(tf.keras.Model):
 
         # downstream task softmax classifier
         self.downstream_classifier = None
-
-    def get_config(self):
-        return self.conf
 
     @tf.function
     def slice_hosts(self, t):
@@ -323,49 +321,50 @@ class DNS_GT(tf.keras.Model):
                 name="classification_layer",
             )
 
-    @staticmethod
-    @tfmpl.figure_tensor
-    def draw_scatter(a, verbose=False, **kwargs):
-        """Draw scatter plots for tf.summary.
-        Kwargs are passed to the matplotlib Figure initialization.
+    # Deprecating
+    # @staticmethod
+    # @tfmpl.figure_tensor
+    # def draw_scatter(a, verbose=False, **kwargs):
+    #     """Draw scatter plots for tf.summary.
+    #     Kwargs are passed to the matplotlib Figure initialization.
 
-        Args:
-            a (tf.Tensor): 1D tensor array containing y values of the scatter plot.
-            verbose (bool, optional): If True, print debugging information. Defaults to False.
+    #     Args:
+    #         a (tf.Tensor): 1D tensor array containing y values of the scatter plot.
+    #         verbose (bool, optional): If True, print debugging information. Defaults to False.
 
-        Returns:
-            tf.Tensor: image tensor of shape (1, h, w, 3) of type uint8
-            (values ranging between 0 and 255), plottable with tf.summary.image().
-        """
-        fig = tfmpl.create_figure(figsize=(5, 5), **kwargs)
-        ax = fig.add_subplot()
+    #     Returns:
+    #         tf.Tensor: image tensor of shape (1, h, w, 3) of type uint8
+    #         (values ranging between 0 and 255), plottable with tf.summary.image().
+    #     """
+    #     fig = tfmpl.create_figure(figsize=(5, 5), **kwargs)
+    #     ax = fig.add_subplot()
 
-        # Axes are constrained between 0 and 1 because values are normalized
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
+    #     # Axes are constrained between 0 and 1 because values are normalized
+    #     ax.set_xlim(0, 1)
+    #     ax.set_ylim(0, 1)
 
-        scatter_array = np.array([[idx, val] for idx, val in enumerate(a)])
+    #     scatter_array = np.array([[idx, val] for idx, val in enumerate(a)])
 
-        # normalize indexes between 0 and 1
-        scatter_array[:, 0] /= len(a)
+    #     # normalize indexes between 0 and 1
+    #     scatter_array[:, 0] /= len(a)
 
-        # normalize embedding  values between 0 and 1
-        scatter_array[:, 1] = (scatter_array[:, 1] - np.min(scatter_array[:, 1])) / (
-            np.max(scatter_array[:, 1]) - np.min(scatter_array[:, 1])
-        )
+    #     # normalize embedding  values between 0 and 1
+    #     scatter_array[:, 1] = (scatter_array[:, 1] - np.min(scatter_array[:, 1])) / (
+    #         np.max(scatter_array[:, 1]) - np.min(scatter_array[:, 1])
+    #     )
 
-        if verbose:
-            print(scatter_array)
+    #     if verbose:
+    #         print(scatter_array)
 
-        # draw plot
-        ax.scatter(
-            scatter_array[:, 0],
-            scatter_array[:, 1],
-            s=100,
-            marker="s",
-        )
-        fig.tight_layout()
-        return fig
+    #     # draw plot
+    #     ax.scatter(
+    #         scatter_array[:, 0],
+    #         scatter_array[:, 1],
+    #         s=100,
+    #         marker="s",
+    #     )
+    #     fig.tight_layout()
+    #     return fig
 
     def call(self, inputs, training=None, **kwargs):
         # Take host and domain tokens from the given sequence
@@ -374,46 +373,45 @@ class DNS_GT(tf.keras.Model):
         hosts = tf.squeeze(hosts, axis=-1)  # [B,L]
         domains = tf.squeeze(domains, axis=-1)  # [B,L]
 
+        # TODO All this should be redone using purely summary.image(), without matplotlib
         # <----------------------- DEBUG: monitor some embeddings on tensorboard
-        if self.tb_manager.is_hot():
-            # Retrieve embeddings
-            pad_emb = self.domain_embeddings(self.domains_lookup(tf.constant(b"<PAD>")))
-            unk_emb = self.domain_embeddings(
-                self.domains_lookup(
-                    tf.constant(
-                        b"somedomainnamethatdefinitelydoesnotappearinthevocabulary...wellihopesootherwiseeverythingexplodes"
-                    )
-                )
-            )  # make sure it doesn't exist
-            mask_emb = self.domain_embeddings(
-                self.domains_lookup(tf.constant(b"<MASK>"))
-            )
-            most_common_emb = self.domain_embeddings(
-                self.domains_lookup(tf.constant("edge-mqtt.facebook.com"))
-            )
-            similar_but_not_common_emb = self.domain_embeddings(
-                self.domains_lookup(tf.constant("edge-chat.p.facebook.com"))
-            )
-
-            # Compute the scatter plot tensor
-            pad_emb = self.draw_scatter(tf.identity(pad_emb))
-            unk_emb = self.draw_scatter(tf.identity(unk_emb))
-            mask_emb = self.draw_scatter(tf.identity(mask_emb))
-            most_common_emb = self.draw_scatter(tf.identity(most_common_emb))
-            similar_but_not_common_emb = self.draw_scatter(
-                tf.identity(similar_but_not_common_emb)
-            )
-
-            # Write the images
-            self.tb_manager.image("<PAD>", pad_emb)
-            self.tb_manager.image("[UNK]", unk_emb)
-            self.tb_manager.image("<MASK>", mask_emb)
-            self.tb_manager.image(
-                "edge-mqtt.facebook.com (most common)", most_common_emb
-            )
-            self.tb_manager.image(
-                "edge-chat.p.facebook.com (not common)", similar_but_not_common_emb
-            )
+        # if self.tb_manager.is_hot():
+        #     # Retrieve embeddings
+        #     pad_emb = self.domain_embeddings(self.domains_lookup(tf.constant(b"<PAD>")))
+        #     unk_emb = self.domain_embeddings(
+        #         self.domains_lookup(
+        #             tf.constant(
+        #                 b"somedomainnamethatdefinitelydoesnotappearinthevocabulary...wellihopesootherwiseeverythingexplodes"
+        #             )
+        #         )
+        #     )  # make sure it doesn't exist
+        #     mask_emb = self.domain_embeddings(
+        #         self.domains_lookup(tf.constant(b"<MASK>"))
+        #     )
+        #     most_common_emb = self.domain_embeddings(
+        #         self.domains_lookup(tf.constant("edge-mqtt.facebook.com"))
+        #     )
+        #     similar_but_not_common_emb = self.domain_embeddings(
+        #         self.domains_lookup(tf.constant("edge-chat.p.facebook.com"))
+        #     )
+        #     Compute the scatter plot tensor
+        #     pad_emb = self.draw_scatter(tf.identity(pad_emb))
+        #     unk_emb = self.draw_scatter(tf.identity(unk_emb))
+        #     mask_emb = self.draw_scatter(tf.identity(mask_emb))
+        #     most_common_emb = self.draw_scatter(tf.identity(most_common_emb))
+        #     similar_but_not_common_emb = self.draw_scatter(
+        #         tf.identity(similar_but_not_common_emb)
+        #     )
+        #     Write the images
+        #     self.tb_manager.image("<PAD>", pad_emb)
+        #     self.tb_manager.image("[UNK]", unk_emb)
+        #     self.tb_manager.image("<MASK>", mask_emb)
+        #     self.tb_manager.image(
+        #         "edge-mqtt.facebook.com (most common)", most_common_emb
+        #     )
+        #     self.tb_manager.image(
+        #         "edge-chat.p.facebook.com (not common)", similar_but_not_common_emb
+        #     )
         # --------------------------------------------------------------------->
 
         # Mask the tokens if required
@@ -538,6 +536,10 @@ class DNS_GT(tf.keras.Model):
             pred, mask = self(
                 seq, training=True
             )  # ([B,L,vsize], [B,L]) or ([B,L,1], _)
+
+            if self.tb_manager.enabled:  ###############
+                self.tb_manager.image("final_output", pred[:1], minmax=True)
+                self.tb_manager.text("input_domains", domains[0])
 
             if not self.finetuning:
                 loss = self.compiled_loss(
@@ -694,23 +696,35 @@ class MHGAT_Block(tf.keras.layers.Layer):
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
 
         # Configuration
-        self._name = kwargs.get("name") or self.name
         self.heads = tf.constant(heads)
         self.emb_dim = tf.constant(emb_dim)
         self.head_dim = tf.math.floordiv(self.emb_dim, self.heads)
         self.nonlinear_stretch = tf.constant(4)
+        self.verbose = kwargs.get("verbose")
 
         # Query, Key and Value matrices (multi-head)
         self.Wq = [
-            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wq/h{i}")
+            tf.keras.layers.Dense(
+                self.head_dim,
+                name=f"MHGAT{self.block_id}-Wq/h{i}",
+                # activity_regularizer=tf.keras.regularizers.L2(),
+            )
             for i in range(self.heads)
         ]
         self.Wk = [
-            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wk/h{i}")
+            tf.keras.layers.Dense(
+                self.head_dim,
+                name=f"MHGAT{self.block_id}-Wk/h{i}",
+                # activity_regularizer=tf.keras.regularizers.L2(),
+            )
             for i in range(self.heads)
         ]
         self.Wv = [
-            tf.keras.layers.Dense(self.head_dim, name=f"MHGAT{self.block_id}-Wv/h{i}")
+            tf.keras.layers.Dense(
+                self.head_dim,
+                name=f"MHGAT{self.block_id}-Wv/h{i}",
+                # activity_regularizer=tf.keras.regularizers.L2(),
+            )
             for i in range(self.heads)
         ]
         self.Wo = tf.keras.layers.Dense(self.emb_dim, name=f"MHGAT{self.block_id}-Wo")
@@ -738,6 +752,9 @@ class MHGAT_Block(tf.keras.layers.Layer):
         self.dropout = tf.keras.layers.Dropout(0.1)
 
     def call(self, inputs, adjs, **kwargs):
+        if self.verbose and self.tb_manager.is_hot():
+            print(f"===== Block {self.block_id} =====")
+
         # inputs (embeddings) [B, L, emb_dim]
         Q = tf.stack(
             [Wqi(inputs) for Wqi in self.Wq], axis=1
@@ -749,12 +766,65 @@ class MHGAT_Block(tf.keras.layers.Layer):
             [Wvi(inputs) for Wvi in self.Wv], axis=1
         )  # [B, heads, L, head_dim]
 
+        if self.tb_manager.enabled:
+            self.tb_manager.histogram(
+                f"Q-head0-block{self.block_id}", Q[:, 0]
+            )  # [B, L, head_dim]
+            self.tb_manager.histogram(
+                f"K-head0-block{self.block_id}", K[:, 0]
+            )  # [B, L, head_dim]
+            self.tb_manager.histogram(
+                f"V-head0-block{self.block_id}", V[:, 0]
+            )  # [B, L, head_dim]
+
+        if self.tb_manager.is_hot():
+            if self.verbose:
+                print("Embeddings")
+                print(inputs[0])
+                # print("Avg embedding abs value")
+                # print(tf.math.reduce_mean(tf.math.abs(inputs[0]), axis=-1))
+            self.tb_manager.image(
+                f"block{self.block_id}-input_embs", inputs[:1], minmax=True
+            )
+
+            # print("Q (head 0)")
+            # print("Avg Q abs value")
+            # print(Q[0, 0])
+            # print(tf.math.reduce_mean(tf.math.abs(Q[0, 0]), axis=-1))
+
+            # print("Wq0")
+            # Wq_kernel, Wq_bias = self.Wq[0].get_weights()
+            # print(Wq_kernel)
+            # print(Wq_bias)
+            # print(tf.math.reduce_mean(tf.math.abs(Wq_kernel)))
+
+            # print("K (head 0)")
+            # print(K[0, 0])
+            # print("Avg K abs value")
+            # print(tf.math.reduce_mean(tf.math.abs(K[0, 0]), axis=-1))
+
+            # print("Wk0")
+            # Wk_kernel, Wk_bias = self.Wk[0].get_weights()
+            # print(Wk_kernel)
+            # print(Wk_bias)
+            # print(tf.math.reduce_mean(tf.math.abs(Wk_kernel)))
+
+            # print("V (head 0)")
+            # print(V[0, 0])
+            # print("Avg V abs value")
+            # print(tf.math.reduce_mean(tf.math.abs(V[0, 0]), axis=-1))
+
+            # print("Wv0")
+            # Wv_kernel, Wv_bias = self.Wv[0].get_weights()
+            # print(Wv_kernel)
+            # print(Wv_bias)
+            # print(tf.math.reduce_mean(tf.math.abs(Wv_kernel)))
+
         scores = tf.linalg.matmul(Q, tf.transpose(K, (0, 1, 3, 2)))  # [B, heads, L, L]
 
-        if self.tb_manager.enabled:
-            print(f"===== Block {self.block_id} =====")
-            print("Scores before normalization")
-            print(scores[0, 0])
+        # if self.tb_manager.is_hot():
+        #     print("Scores before normalization")
+        #     print(scores[0, 0])
         if self.tb_manager.is_hot():
             self.tb_manager.image(
                 f"MHGAT{self.block_id}/head0-scores-before-normalization",
@@ -770,9 +840,9 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # >> New normalizazion
         # scores = utils.nn.minmax(scores)
 
-        if self.tb_manager.enabled:
-            print("Scores before softmax (after normalization)")
-            print(scores[0, 0])
+        # if self.tb_manager.is_hot():
+        #     print("Scores before softmax (after normalization)")
+        #     print(scores[0, 0])
         if self.tb_manager.is_hot():
             self.tb_manager.image(
                 f"MHGAT{self.block_id}/head0-scores-before-softmax",
@@ -788,7 +858,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         adj = tf.expand_dims(adj, axis=1)
         adj = tf.tile(adj, [1, tf.shape(scores)[1], 1, 1])
 
-        if self.tb_manager.enabled:
+        if self.verbose and self.tb_manager.is_hot() and self.block_id == 0:
             print("Adj")
             print(adj[0, 0])
         if self.tb_manager.is_hot():
@@ -801,7 +871,7 @@ class MHGAT_Block(tf.keras.layers.Layer):
         # Calculate softmax masking disconnected scores
         scores = self.softmax(scores, mask=adj)  # [B, heads, L, L] attention weights
 
-        if self.tb_manager.enabled:
+        if self.verbose and self.tb_manager.is_hot():
             print("Scores after softmax")
             print(scores[0, 0])
         if self.tb_manager.is_hot():
@@ -813,6 +883,11 @@ class MHGAT_Block(tf.keras.layers.Layer):
 
         # Calculate weighted values
         result = tf.linalg.matmul(scores, V)  # [B, heads, L, head_dim]
+
+        if self.verbose and self.tb_manager.is_hot():
+            print("After reimpasto")
+            print(result)
+
         result = tf.concat(
             tf.unstack(result, axis=1), axis=-1
         )  # [B, L, heads*head_dim]
@@ -834,13 +909,12 @@ class MHGAT_Block(tf.keras.layers.Layer):
         result = tf.math.add(result, proj)
         result = self.bn2(result)
 
+        if self.verbose and self.tb_manager.is_hot():
+            print(f"Block{self.block_id} output embs:")
+            print(result)
+
         # Tensorboard -- Write activation
         if self.tb_manager.is_hot():
-            # Visualize the first word of the first sequence as it evolves through blocks
-            result_image = DNS_GT.draw_scatter(
-                tf.identity(result[0, 0])
-            )  # [emb_dim] -> [1, h, w, 3]
-            self.tb_manager.image(f"{self.block_id}-firstquery", result_image)
 
             # Visualize the same thing but with heatmap
             self.tb_manager.image(

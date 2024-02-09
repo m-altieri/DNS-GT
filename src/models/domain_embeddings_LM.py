@@ -648,7 +648,7 @@ class DNS_GT(tf.keras.Model):
         return loss
 
     def _predict(self, seq, mask=None):
-        self.tb_manager.force(True)
+        # self.tb_manager.force(True)
         in_fold_mask = None
         if self.finetuning:
             # seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
@@ -681,7 +681,7 @@ class DNS_GT(tf.keras.Model):
                 tf.boolean_mask(pred, domains_mask),
                 regularization_losses=self.losses,
             )
-        self.tb_manager.force(False)
+        # self.tb_manager.force(False)
         return pred, 0.0, in_fold_mask
 
 

@@ -35,51 +35,64 @@ class Evaluation:
         results = {}
 
         # Confusion matrix
-        confusion_matrix = sklearn.metrics.confusion_matrix(
-            df["labels"], df["preds"].round(), labels=[1, 0]
+        preds_columns = df.filter(regex="^preds-\d+$")
+        discrete_preds = preds_columns.apply(
+            lambda row: row.index.get_loc(row.idxmax()), axis=1
         )
-        results["confusion_matrix"] = {
-            "tn": confusion_matrix[0, 0],
-            "fp": confusion_matrix[0, 1],
-            "fn": confusion_matrix[1, 0],
-            "tp": confusion_matrix[1, 1],
-        }
-        if verbose:
-            print(f"SKlearn Confusion matrix:\n{confusion_matrix}")
+        confusion_matrix = sklearn.metrics.confusion_matrix(
+            df["labels"], discrete_preds
+        )
+        print("SKlearn Confusion matrix:\n", confusion_matrix)
+        print(
+            "SKlearn Classification Report:\n",
+            sklearn.metrics.classification_report(df["labels"], discrete_preds),
+        )
 
-        # Precision, recall, F1, accuracy at different thresholds
-        for threshold in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
-            preds_hard = (df["preds"] > threshold).astype(int)
+        # results["confusion_matrix"] = {
+        #     "tn": confusion_matrix[0, 0],
+        #     "fp": confusion_matrix[0, 1],
+        #     "fn": confusion_matrix[1, 0],
+        #     "tp": confusion_matrix[1, 1],
+        # }
+        # if verbose:
 
-            precision = sklearn.metrics.precision_score(
-                df["labels"], preds_hard
-            )
-            recall = sklearn.metrics.recall_score(df["labels"], preds_hard)
-            f1_score = sklearn.metrics.f1_score(df["labels"], preds_hard)
-            accuracy = sklearn.metrics.accuracy_score(df["labels"], preds_hard)
+        # # Precision, recall, F1, accuracy at different thresholds
+        # for threshold in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+        #     preds_hard = (df["preds"] > threshold).astype(int)
 
-            results[threshold] = {
-                "precision": precision,
-                "recall": recall,
-                "f1_score": f1_score,
-                "accuracy": accuracy,
-            }
-            if verbose:
-                print(f"-- {threshold} --")
-                print(f"Precision: {precision:.3f}")
-                print(f"Recall: {recall:.3f}")
-                print(f"F1 score: {f1_score:.3f}")
-                print(f"Accuracy: {accuracy:.3f}")
-                print()
+        #     precision = sklearn.metrics.precision_score(df["labels"], preds_hard)
+        #     recall = sklearn.metrics.recall_score(df["labels"], preds_hard)
+        #     f1_score = sklearn.metrics.f1_score(df["labels"], preds_hard)
+        #     accuracy = sklearn.metrics.accuracy_score(df["labels"], preds_hard)
+
+        #     results[threshold] = {
+        #         "precision": precision,
+        #         "recall": recall,
+        #         "f1_score": f1_score,
+        #         "accuracy": accuracy,
+        #     }
+        #     if verbose:
+        #         print(f"-- {threshold} --")
+        #         print(f"Precision: {precision:.3f}")
+        #         print(f"Recall: {recall:.3f}")
+        #         print(f"F1 score: {f1_score:.3f}")
+        #         print(f"Accuracy: {accuracy:.3f}")
+        #         print()
 
         # AUC
-        auc = sklearn.metrics.roc_auc_score(df["labels"], df["preds"])
+        print(df["labels"])
+        pd.options.display.max_rows = 999
+        print(df["labels"].unique())
+        print(len(df["labels"].unique()))
+        print(preds_columns)
+        auc = sklearn.metrics.roc_auc_score(
+            df["labels"], preds_columns, multi_class="ovr"
+        )
         results["auc"] = auc
-        if verbose:
-            print(f"AUC: {auc:.3f}")
+        print(f"AUC: {auc:.3f}")
 
         # Plot ROC
-        fpr, tpr, _ = sklearn.metrics.roc_curve(df["labels"], df["preds"])
+        fpr, tpr, _ = sklearn.metrics.roc_curve(df["labels"], preds_columns)
         if plot_save_path:
             plt.figure(figsize=(5, 5))
             plt.plot(
@@ -125,9 +138,7 @@ class Evaluation:
             fpr = results["roc"]["fpr"]
             tpr = results["roc"]["tpr"]
             run_label = (
-                override_names[i]
-                if override_names is not None
-                else f"{model}-{run}"
+                override_names[i] if override_names is not None else f"{model}-{run}"
             )
             plt.plot(
                 fpr,
@@ -179,9 +190,7 @@ class Evaluation:
         for model, run in zip(models, runs):
             results_path = os.path.join(runs_path, model, run, "predictions")
             preds_csvs.append(
-                pd.read_csv(
-                    os.path.join(results_path, os.listdir(results_path)[0])
-                )
+                pd.read_csv(os.path.join(results_path, os.listdir(results_path)[0]))
             )
 
         # Concatenate all predictions together
@@ -225,9 +234,7 @@ class Evaluation:
         }
         for model, run in zip(models, runs):
             preds_path = os.path.join(runs_path, model, run, "predictions")
-            df = pd.read_csv(
-                os.path.join(preds_path, os.listdir(preds_path)[0])
-            )
+            df = pd.read_csv(os.path.join(preds_path, os.listdir(preds_path)[0]))
             if preds is None:
                 preds = df
             else:
@@ -248,9 +255,7 @@ class Evaluation:
                 best_threshold = thresholds[
                     per_threshold_f1.index(max(per_threshold_f1))
                 ]
-                collected_results["f1_best"].append(
-                    results[best_threshold]["f1_score"]
-                )
+                collected_results["f1_best"].append(results[best_threshold]["f1_score"])
                 collected_results["accuracy_best"].append(
                     results[best_threshold]["accuracy"]
                 )

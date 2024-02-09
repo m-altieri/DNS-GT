@@ -3,12 +3,12 @@ import numpy as np
 from abc import abstractmethod
 from sklearn.cluster import DBSCAN
 from typing import Any, Iterator, Protocol
-
 from utils.labeling import (
     LabelMatcher,
     BotnetDetectionLabelMatcher,
     MaliciousDomainClassificationLabelMatcher,
 )
+from utils.constants import Constants
 
 
 class SequencingStrategy(Protocol):
@@ -181,7 +181,7 @@ class FixedSequencingStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
-        with_timestamps: bool=False,
+        with_timestamps: bool = False,
         **kwargs: Any,
     ) -> np.ndarray:
         # get kwargs
@@ -235,7 +235,7 @@ class ClusterSequencingStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
-        with_timestamps: bool=False,
+        with_timestamps: bool = False,
         **kwargs: Any,
     ) -> np.ndarray:
         seqs = []
@@ -282,7 +282,8 @@ class ClusterSequencingStrategy:
 
     @staticmethod
     def get_clusters_from_timestamp(
-        queries, eps=lambda deltas: np.percentile(deltas, 50)
+        queries,
+        eps=lambda deltas: np.percentile(deltas, Constants._DBSCAN_DEFAULT_PERCENTILE),
     ):
         """Get a list of labels mapping each item in the input array to a cluster.
         Uses the DBSCAN density-based clustering algorithm.
@@ -328,7 +329,7 @@ class TimeWindowStrategy:
         group_by_host: bool,
         *,
         include_class: bool = None,
-        with_timestamps: bool=False,
+        with_timestamps: bool = False,
         **kwargs: Any,
     ) -> np.ndarray:
         verbose = kwargs.get("verbose", False)
@@ -339,9 +340,9 @@ class TimeWindowStrategy:
         if group_by_host:
             queries = queries[np.lexsort((queries[:, 2], queries[:, 0]))]
 
-        base_duration = kwargs.get("base_duration", 8.0)
-        delta_min = kwargs.get("delta_min", 3.0)
-        delta_max = kwargs.get("delta_max", 4.0)
+        base_duration = kwargs.get("base_duration", Constants._TIMEWINDOW_DELTA_BASE)
+        delta_min = kwargs.get("delta_min", Constants._TIMEWINDOW_DELTA_MIN)
+        delta_max = kwargs.get("delta_max", Constants._TIMEWINDOW_DELTA_MAX)
 
         seqs = []
 

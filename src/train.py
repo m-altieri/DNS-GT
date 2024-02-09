@@ -503,7 +503,7 @@ def main():
             d, labels, preds = [], [], []
             count_in_fold_predictions = 0
             step = 0
-            pbar = tqdm(test)
+            pbar = tqdm(train)
             for x in pbar:
                 # DNS-GT: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
 
@@ -528,7 +528,10 @@ def main():
                 # Append current predictions in a flattened way
                 d.extend(np.ravel(domains))
                 labels.extend(np.ravel(label))
-                preds.extend(np.ravel(pred))
+                if preds == []:
+                    preds = [[] for c in range(pred.shape[-1])]
+                for c in range(pred.shape[-1]):
+                    preds[c].extend(np.ravel(pred[..., c]))
 
                 pbar.set_description(
                     f"Step {step} completed: {count_in_fold_predictions} (+{current_in_fold_predictions})"
@@ -536,7 +539,9 @@ def main():
                 step += 1
 
             # Create predictions DataFrame
-            df = pd.DataFrame({"domains": d, "labels": labels, "preds": preds})
+            df = pd.DataFrame({"domains": d, "labels": labels})
+            for c, class_preds in enumerate(preds):
+                df[f"preds-{c}"] = class_preds
             print(df)
 
             # Save predictions DataFrame

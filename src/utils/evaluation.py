@@ -35,8 +35,8 @@ class Evaluation:
         results = {}
 
         # Confusion matrix
-        preds_columns = df.filter(regex="^preds-\d+$")
-        discrete_preds = preds_columns.apply(
+        preds = df.filter(regex="^preds-\d+$")
+        discrete_preds = preds.apply(
             lambda row: row.index.get_loc(row.idxmax()), axis=1
         )
         confusion_matrix = sklearn.metrics.confusion_matrix(
@@ -80,30 +80,37 @@ class Evaluation:
         #         print()
 
         # AUC
-        print(df["labels"])
-        pd.options.display.max_rows = 999
-        print(df["labels"].unique())
-        print(len(df["labels"].unique()))
-        print(preds_columns)
+        # # take only pred columns from labels that are present
+        # print([f"preds-{i}" for i in df["labels"].unique()])
+        # if len(preds_columns.columns) != len(df["labels"].unique()):
+        #     preds_columns = preds_columns[[f"preds-{i}" for i in df["labels"].unique()]]
+
+        unique_classes = df["labels"].unique()
+        unique_classes.sort()
+
+        print(pd.get_dummies(df["labels"]))
+        print(preds[[f"preds-{c}" for c in unique_classes]])
         auc = sklearn.metrics.roc_auc_score(
-            df["labels"], preds_columns, multi_class="ovr"
+            pd.get_dummies(df["labels"]),
+            preds[[f"preds-{c}" for c in unique_classes]],
         )
+
         results["auc"] = auc
         print(f"AUC: {auc:.3f}")
 
         # Plot ROC
-        fpr, tpr, _ = sklearn.metrics.roc_curve(df["labels"], preds_columns)
-        if plot_save_path:
-            plt.figure(figsize=(5, 5))
-            plt.plot(
-                fpr,
-                tpr,
-                label=f"ROC (AUC = {auc:.3f})",
-            )
-            plt.legend(loc="lower right")
-            plt.savefig(plot_save_path)
+        # fpr, tpr, _ = sklearn.metrics.roc_curve(df["labels"], preds)
+        # if plot_save_path:
+        #     plt.figure(figsize=(5, 5))
+        #     plt.plot(
+        #         fpr,
+        #         tpr,
+        #         label=f"ROC (AUC = {auc:.3f})",
+        #     )
+        #     plt.legend(loc="lower right")
+        #     plt.savefig(plot_save_path)
 
-        results["roc"] = {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
+        # results["roc"] = {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
 
         self.results = results
 

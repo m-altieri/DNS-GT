@@ -1,9 +1,7 @@
 import os
-import json
 import pprint
 import pickle
 import sklearn
-import numpy as np
 import pandas as pd
 from colorama import Fore
 import matplotlib.pyplot as plt

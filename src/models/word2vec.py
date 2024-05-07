@@ -5,8 +5,10 @@ import tensorflow as tf
 tf.random.set_seed(42)
 from datetime import datetime
 
-from utils.nn import FF
-from utils.distribute import DummyStrategy
+from pytftk.nn import FF
+from pytftk.distribute import DummyStrategy
+
+from utils.constants import Constants
 
 
 class W2V(tf.keras.Model):
@@ -149,22 +151,35 @@ class W2V(tf.keras.Model):
             output_dim=self.conf["dim"],
         )
 
-        self.out = FF(
-            [self.conf["dim"], self.ndomains], [None, None]
-        )  # tf.keras.layers.Dense(self.ndomains)
-        self.classifier = FF(
-            [self.conf["dim"], 1], [None, "sigmoid"]
-        )  # tf.keras.layers.Dense(1, activation="sigmoid")
+        # Pretraining output
+        self.out = FF([self.conf["dim"], self.ndomains], [None, None])
+
+        # Finetuning output
+        nclasses = {
+            "m": Constants._NCLASSES_MALICIOUS_CLASSIFICATION,
+            "b": Constants._NCLASSES_BOTNET_DETECTION,
+        }[self.conf.get("labeling")]
+        self.classifier = FF([self.conf["dim"], nclasses], [None, "softmax"])
+
+    def init_downstream_classifier(self):
+        pass
 
     def call(self, domain_indexes):
         # domains: [B, L]
         L = tf.shape(domain_indexes)[1]
         domain_embs = self.domain_embeddings(domain_indexes)  # [B, L, dim]
+        # check that no weight is nan. it may happen due to improper weight loading
+        tf.debugging.Assert(
+            condition=tf.math.reduce_any(
+                tf.math.is_nan(self.domain_embeddings.get_weights())
+            )
+            == False,
+            data=[tf.where(tf.math.is_nan(self.domain_embeddings.get_weights()))],
+        )
 
         if self.conf["type"] == "CBOW":
             M = self.compute_M(domain_indexes)  # [B, L, L]
             C = tf.linalg.matmul(tf.cast(M, tf.float32), domain_embs)  # [B, L, dim]
-
         else:
             C = domain_embs  # [B, L, dim]
 
@@ -180,7 +195,6 @@ class W2V(tf.keras.Model):
             out = tf.nn.softmax(out)
         else:
             classification = self.classifier(C)  # Dense(1) -> [B,L]
-
         return out if not self.finetuning else classification
 
     @tf.function
@@ -207,11 +221,9 @@ class W2V(tf.keras.Model):
 
         with tf.GradientTape() as tape:
             domain_indexes = self.domain_lookup(domains)
-            # domain_embs = self.domain_embeddings(domain_indexes)
 
             # Get predictions: [B, vsize] or [B, L]
             pred = self(domain_indexes, training=True)
-
             if self.conf["type"] == "CBOW":
                 if not self.finetuning:
                     # CBOW Pretraining
@@ -224,7 +236,6 @@ class W2V(tf.keras.Model):
                     loss = self.compiled_loss(
                         domain_indexes, pred, regularization_losses=self.losses
                     )
-
                 else:
                     # CBOW Finetuning
                     loss = self.compiled_loss(

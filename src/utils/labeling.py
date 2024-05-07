@@ -22,7 +22,8 @@ class MaliciousDomainClassificationLabelMatcher:
             self.vocab = f.read().splitlines()
 
     def match_labels(self, queries, labeled_data_path, **_):
-        # Load labels
+
+        # load labels
         labels = pd.read_csv(
             labeled_data_path,
             index_col=0,
@@ -46,10 +47,9 @@ class MaliciousDomainClassificationLabelMatcher:
             ]
         )
 
-        # Only use labels for domains in the vocabulary
+        # only use labels for domains in the vocabulary
         labels = labels[labels["domain"].isin(self.vocab)]
         labels = labels.reset_index()
-
         labels = labels.sort_values(
             by="domain",
             key=lambda domains: domains.map(lambda domain: self.vocab.index(domain)),
@@ -96,39 +96,41 @@ class BotnetDetectionLabelMatcher:
         # should be merged and it should point to the appropriate labeling
         # algorithm from this file
 
-        # Get datetime of the current queries
+        # get datetime of the current queries
         mmddhh = re.search("^\d{4}(\d{4})_(\d{2})", kwargs.get("queries_filename"))
         mmddhh = mmddhh.group(1) + mmddhh.group(2)
 
-        # Get host labels (for botnet belonging)
+        # get host labels (for botnet belonging)
         labels = pd.read_csv(labeled_data_path)
         labels = labels[["Hostname_MMDDHH", "bot_family"]]
 
-        # Split hostname and datetime into two columns. Datetime will be used to match with the processed csv files
+        # split hostname and datetime into two columns
+        # datetime will be used to match with the processed csv files
         labels[["Hostname", "MMDDHH"]] = labels["Hostname_MMDDHH"].str.split(
             "_", expand=True
         )
 
-        # Select rows for the current datetime
+        # select rows for the current datetime
         labels = labels[labels["MMDDHH"] == mmddhh]
 
-        # If there are no labels (strange case for hour 042700), consider all labels unknown
+        # if there are no labels in the queries file (extreme case but
+        # happening for hour 042700), consider all labels as unknown
         if len(labels) == 0:
             return np.concatenate(
                 [queries, np.full((len(queries), 1), self._LABEL_IDS["Unknown"])],
                 axis=-1,
             )
 
-        # Replace labels with their corresponding ids
+        # replace labels with their corresponding ids
         labels["bot_family"] = labels["bot_family"].replace(
             to_replace=[k for k in self._LABEL_IDS],
-            value=[self._LABEL_IDS[k] for k in self._LABEL_IDS],
+            value=[str(self._LABEL_IDS[k]) for k in self._LABEL_IDS],
         )
 
-        # Convert labels to a numpy array and select useful columns
+        # convert labels to a numpy array and select useful columns
         labels = labels.to_numpy()[:, [2, 1]]  # columns: [hostname, label]
 
-        # Match labels with queries having the same host
+        # match labels with queries having the same host
         sorter = np.argsort(labels[:, 0])
         idx = sorter[np.searchsorted(labels[:, 0], queries[:, 0], sorter=sorter)]
         matching_labels = labels[idx, 1]

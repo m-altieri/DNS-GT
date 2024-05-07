@@ -24,16 +24,15 @@ class SequencingStrategy(Protocol):
 
 
 class SequenceGenerator:
-    """Create a sequence generator.
-    The main use for this class is with the tf.data API.
-    Specifically, a `SequenceGenerator` object is a callable which returns an iterator that provides
-    input sequence during model training.
+    """A sequence generator, mainly to be used with the tf.data API.
+    Specifically, a `SequenceGenerator` object is a callable which returns an
+    iterator that provides input sequences during model training.
 
     >>> generator = SequenceGenerator(...)
     >>> g = generator()
     >>> print(next(g))
 
-    Alternatively, it's possible to use the generator object as a normal iterator:
+    Alternatively, it's possible to use the generator as a normal iterator:
 
     >>> generator = SequenceGenerator(...)
     >>> for sequence in generator:
@@ -54,19 +53,28 @@ class SequenceGenerator:
         """Initialize a SequenceGenerator object.
 
         Args:
-            input_folder (str): folder containing .npy files, each representing a matrix of shape `(n_queries, 2)` or `(n_queries, 3)` ,
-        where columns are host, domain, and optionally timestamp.
-            sequencing_strategy (SequencingStrategy): a SequencingStrategy object. Used to determine the way sequences should be created.
+            input_folder (str): folder containing .npy files, each representing
+            a matrix of shape `(n_queries, 2)` or `(n_queries, 3)`, where
+            columns are host, domain, and optionally timestamp.
+            sequencing_strategy (SequencingStrategy): a SequencingStrategy
+            object. Used to determine the way sequences should be created.
             seqlen (int): maximum sequence length.
-            include_class (bool): used in finetuning to include the class label of each query.
-            group_by_host (bool): whether each sequence should have only queries from the same host.
+            include_class (bool): used in finetuning to include the class label
+            of each query.
+            group_by_host (bool): whether each sequence should have only
+            queries from the same host.
+            task (str): a string representing the downstream task: "m" for
+            malicious domain detection or "b" for botnet detection.
 
         Keyword args:
-            stride (int): if strategy is "fixed", by how many queries to shift after each sequence.
-            include_start (bool): Deprecated. whether to include a <START> token at the beginning of the sequence.
+            stride (int): if strategy is "fixed", by how many queries to shift
+            after each sequence.
+            include_start (bool): Deprecated. whether to include a <START>
+            token at the beginning of the sequence.
             model (str): model to use. Either "dns_gt" or "w2v".
             vocab (str): domains vocabulary. Only used in finetuning.
-            tiny_amount (bool): Deprecated. Whether to use a small number of queries for debugging purposes.
+            tiny_amount (bool): Deprecated. Whether to use a small number of
+            queries for debugging purposes.
             verbose (bool): whether to print additional debugging info.
         """
         self.input_folder = input_folder
@@ -124,6 +132,27 @@ class SequenceGenerator:
                     queries_filename=f,
                 )
 
+            # TODO filtering (i.e., for now, balancing classes) might go here?
+            # <----
+            # print(queries)
+            # print(np.shape(queries))
+
+            # labels = queries[..., -1]
+            # unique_labels = np.unique(labels)
+            # unique_labels = np.sort(unique_labels)
+            # print(f"Unique labels: {unique_labels}")
+
+            # counts = {l: len(np.where(labels == l)[0]) for l in unique_labels}
+
+            # print(f"File {f}")
+            # print(f"Counts: {counts}")
+
+            # continue
+            # import sys
+
+            # sys.exit(0)
+            # ---->
+
             # Make sequences from queries with given strategy
             seqs = self.sequencing_strategy.make_sequences(
                 queries,
@@ -143,12 +172,15 @@ class SequenceGenerator:
 
 
 def pad(sequence, to_len, token="<PAD>"):
-    """Pad the input sequence with the specified token along axis 0 until it reaches a length of to_len.
+    """Pad the input sequence with the specified token along axis 0 until it
+    reaches a length of to_len.
 
     Args:
-        sequence (array): the input sequence to pad. Must have shape (n_queries, 3) or (n_queries, 4).
+        sequence (array): the input sequence to pad. Must have shape
+        (n_queries, 3) or (n_queries, 4).
         to_len (int): the total length along axis 0 of the returned array.
-        token (str, optional): token to pad with. Defaults to "<PAD>". The last column is always padded with value 0.
+        token (str, optional): token to pad with. Defaults to "<PAD>". The last
+        column is always padded with value 0.
 
     Returns:
         array: the padded sequence of length to_len.
@@ -171,7 +203,8 @@ def pad(sequence, to_len, token="<PAD>"):
 
 class FixedSequencingStrategy:
     """Sequences are cut exactly every `seqlen` queries, ignoring the timestamp.
-    Each query in the dataset will appear in multiple sequences, depending on the stride value.
+    Each query in the dataset will appear in multiple sequences, depending on
+    the stride value.
     """
 
     def make_sequences(
@@ -224,7 +257,8 @@ class FixedSequencingStrategy:
 
 
 class ClusterSequencingStrategy:
-    """Sequences are created by splitting queries based on their timestamp, resulting in sequences of different lengths being padded;
+    """Sequences are created by splitting queries based on their timestamp,
+    resulting in sequences of different lengths being padded;
     each query in the dataset will only appear in a single sequence.
     """
 
@@ -285,16 +319,17 @@ class ClusterSequencingStrategy:
         queries,
         eps=lambda deltas: np.percentile(deltas, Constants._DBSCAN_DEFAULT_PERCENTILE),
     ):
-        """Get a list of labels mapping each item in the input array to a cluster.
-        Uses the DBSCAN density-based clustering algorithm.
+        """Get a list of labels mapping each item in the input array to a
+        cluster, using the DBSCAN density-based clustering algorithm.
 
         Args:
-            queries (numpy array): A numpy 2D array containing timestamped items.
+            queries (np.array): A numpy 2D array containing timestamped items.
             The timestamp is assumed to be in the third column.
             eps (func): Used to change the method eps is calculated in DBSCAN
-            (which determines the maximum distance for two points to be neighbors).
-            By default it is the 50-percentile of the subsequent timestamp differences.
-            The previous default was `lambda deltas: np.mean(deltas) + 3 * np.std(deltas)`.
+            (which determines the max distance for two points to be neighbors).
+            By default it is the 50-percentile of subsequent timestamp deltas.
+            A possible alternative is using the stddev, such as:
+            `lambda deltas: np.mean(deltas) + 3 * np.std(deltas)`.
         """
         deltas = queries[1:, 2] - queries[:-1, 2]
         try:

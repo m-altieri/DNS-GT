@@ -3,12 +3,13 @@ import numpy as np
 import tensorflow as tf
 
 tf.random.set_seed(42)
-from lib.tf_matplotlib import tfmpl
+# from lib.tf_matplotlib import tfmpl
 
-import utils.nn
-from utils.logging import TBManager
+import pytftk.nn
+from pytftk.logbooks import TBManager
+from pytftk.distribute import DummyStrategy
+
 from utils.constants import Constants
-from utils.distribute import DummyStrategy
 from utils.graphs import (
     AdjacencyEstimator,
     TrivialAdjacencyEstimator,
@@ -166,7 +167,7 @@ class DNS_GT(tf.keras.Model):
         ]
 
         # MLM softmax classifier
-        self.masked_classifier = utils.nn.FF(
+        self.masked_classifier = pytftk.nn.FF(
             [self.conf["dim"], self.ndomains],
             [None, "softmax"],
             name="softmax_layer",
@@ -315,7 +316,7 @@ class DNS_GT(tf.keras.Model):
                 "b": Constants._NCLASSES_BOTNET_DETECTION,
             }[self.conf.get("labeling")]
 
-            self.downstream_classifier = utils.nn.FF(
+            self.downstream_classifier = pytftk.nn.FF(
                 [self.conf["dim"], nclasses],
                 [None, "softmax"],
                 name="classification_layer",
@@ -558,10 +559,14 @@ class DNS_GT(tf.keras.Model):
                         axis=-1,
                     )
 
+                class_weights = self.compute_class_weights(tf.boolean_mask(y, ~in_fold))
+                print(tf.boolean_mask(y, ~in_fold).shape)
+                print(tf.boolean_mask(pred, ~in_fold).shape)
                 loss = self.compiled_loss(
                     tf.boolean_mask(y, ~in_fold),
                     tf.boolean_mask(pred, ~in_fold),
-                    regularization_losses=self.losses,
+                    # regularization_losses=self.losses,
+                    sample_weight=class_weights,
                 )
 
                 # NOTE BUGFIXING: loss becomes nan
@@ -596,6 +601,23 @@ class DNS_GT(tf.keras.Model):
 
         return loss
 
+    @tf.function
+    def compute_class_weights(self, y):
+        """Compute class weights to be used as input for the `sample_weight`
+        parameter to tf.keras.losses.Loss, to normalize the loss of each
+        instance by the inverse frequency of its labels.
+
+        Args:
+            y (tf.Tensor): a Tensor of labels.
+
+        Returns:
+            tf.Tensor: a tf.Tensor with the same shape as `y`, but with each element
+        replaced by its inverse frequency.
+        """
+        equals = tf.equal(tf.expand_dims(y, axis=-1), y)
+        counts = tf.math.reduce_sum(tf.cast(equals, tf.int32), axis=-1)
+        return 1 / counts
+
     def test_step(self, seq):
         if self.finetuning:
             seq, y = seq[..., :-1], tf.strings.to_number(seq[..., -1])
@@ -623,8 +645,11 @@ class DNS_GT(tf.keras.Model):
                     axis=-1,
                 )
 
+            class_weights = self.compute_class_weights(tf.boolean_mask(y, in_fold))
             loss = self.compiled_loss(
-                tf.boolean_mask(y, in_fold), tf.boolean_mask(pred, in_fold)
+                tf.boolean_mask(y, in_fold),
+                tf.boolean_mask(pred, in_fold),
+                sample_weight=class_weights,
             )
 
             # NOTE BUGFIXING: loss becomes nan

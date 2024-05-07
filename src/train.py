@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os
 import sys
 import time
@@ -17,17 +15,19 @@ tf.random.set_seed(42)
 
 from models import DNS_GT, W2V
 
-from utils.data_loading import (
+from utils.data_loading import (  # project specific
     SequenceGenerator,
     TimeWindowStrategy,
     FixedSequencingStrategy,
     ClusterSequencingStrategy,
 )
-from utils.formatting import indent
-from utils.evaluation import Evaluation
-from utils.distribute import DummyStrategy
-from utils.runs_management import RunManager
-from utils.constants import CliArgsDefaults
+from utils.evaluation import Evaluation  # project specific and dirty
+from utils.constants import CliArgsDefaults  # project specific
+from pytftk.formatting import indent
+from pytftk.distribute import DummyStrategy
+from pytftk.runs_management import RunManager  # abstracted the root runs path
+
+# from utils.runs_management import RunManager  # slightly different, so keep this line for now
 
 
 def parse_args():
@@ -87,6 +87,7 @@ def parse_args():
         help="Early Stopping",
     )
     argparser.add_argument("--evaluate", action="store_true")
+    argparser.add_argument("--eval-data", choices=["train", "test"], default="test")
     argparser.add_argument(
         "--gpu",
         action="store",
@@ -305,6 +306,7 @@ def main():
 
     # Manage save folder
     run_manager = RunManager(
+        runs_path="../runs",
         model_object=None,
         model_name=f"{args.model}{f'-{args.type}' if args.type else ''}",
         run_name=args.run_name,
@@ -370,8 +372,8 @@ def main():
             dtype=tf.string,
         ),
     )
-    train = train.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
-    test = test.batch(conf.get("bs")).prefetch(tf.data.AUTOTUNE)
+    train = train.batch(conf.get("bs")).prefetch(5)
+    test = test.batch(conf.get("bs")).prefetch(5)
 
     # Manage training distribution
     dist_strategy = None
@@ -503,7 +505,7 @@ def main():
             d, labels, preds = [], [], []
             count_in_fold_predictions = 0
             step = 0
-            pbar = tqdm(train)
+            pbar = tqdm(train if args.eval_data == "train" else test)
             for x in pbar:
                 # DNS-GT: [B,L,3] (host,domain,label), W2V-CBOW: [B,L,2] (domain,label)
 
@@ -582,9 +584,10 @@ def demo(model, conf, data):
     {Style.RESET_ALL}"""
     )
     print(
-        "Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ for roadmap and updates.\n"
-        + "Syntax: <Host> <Domain> [(<Label>)] -> <Predicted> (<prob%>) [(<Unmasked Domain> <prob%>)]\n"
-        + f"{Fore.CYAN}Cyan{Fore.RESET}: domain is in test fold (model was not trained on that domain).\n"
+        f"Please refer to https://gitlab.jrc.ec.europa.eu/jrc-projects/createg/cdp-bari/dns/-/tree/main/ \
+        and to https://github.com/m-altieri/DNS-GT for roadmap and updates.\n \
+        Syntax: <Host> <Domain> [(<Label>)] -> <Predicted> (<prob%>) [(<Unmasked Domain> <prob%>)]\n \
+        {Fore.CYAN}Cyan{Fore.RESET}: domain is in test fold (model was not trained on that domain).\n"
     )
 
     seq_idx = conf.get("test_seq") or np.random.randint(0, 1000)
@@ -603,23 +606,23 @@ def demo(model, conf, data):
     while show_more:
         seq = seqs[s : s + 1]
 
-        # <--- Modify seq here
-        # if s == 0:
-        #     seq[0, :, 1] = "<PAD>"
-        # seq[0, 0, 1] = "download.cdn.mozilla.net"
-        # --->
+        """ <--- Modify sequence here
+        if s == 0:
+            seq[0, :, 1] = "<PAD>"
+        seq[0, 0, 1] = "download.cdn.mozilla.net"
+        ---> """
 
         mask = np.zeros_like(seq)
-        # <--- Modify mask here
-        # place 1's where you want to replace tokens with <MASK>
-        # axis 0 is always 0 (batch size 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain (and 2 for label if --ft)
-        # example: mask[0, 1, 1] = 1
-        #               ^  ^  ^
-        #   always zero |  |  |
-        #     second token |  |
-        #              domain |
+        """ <--- Modify mask here
+        place 1's where you want to replace tokens with <MASK>
+        axis 0 is always 0 (batch size 1), axis 1 is the index of token within the sequence, axis 2 is 0 for host and 1 for domain (and 2 for label if --ft)
+        example: mask[0, 1, 1] = 1
+                      ↑  ↑  ↑
+          always zero ┘  │  │
+            second token ┘  │
+                     domain ┘
         mask[0, 0, 1] = 1
-        # --->
+        ---> """
 
         masked_seq = np.where(mask, np.full_like(seq, b"<MASK>", dtype=object), seq)
 

@@ -5,7 +5,7 @@ import tensorflow as tf
 
 
 # NOTE This is the initial boilerplate for the tokenization version of the model.
-class TDELM(tf.keras.Model):
+class T_DNS_GT(tf.keras.Model):
     def __init__(self, **kwargs):
         super().__init__()
 

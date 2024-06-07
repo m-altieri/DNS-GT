@@ -7,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from colorama import Fore, Style
 from prompt_toolkit import prompt
+from focal_loss import SparseCategoricalFocalLoss
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
@@ -22,7 +23,9 @@ from utils.data_loading import (  # project specific
     ClusterSequencingStrategy,
 )
 from utils.evaluation import Evaluation  # project specific and dirty
-from utils.constants import CliArgsDefaults  # project specific
+from utils.constants import Constants, CliArgsDefaults  # project specific
+
+import pytftk.gpu_tools as gpu_tools
 from pytftk.formatting import indent
 from pytftk.distribute import DummyStrategy
 from pytftk.runs_management import RunManager  # abstracted the root runs path
@@ -100,6 +103,12 @@ def parse_args():
         + "If it is -1 or contains -1, distribute on all GPUs. All other values are invalid."
         + "GPU indexes start from 0.",
     )
+    argparser.add_argument(
+        "--gpu-auto", action="store_true", default=True
+    )  # experimental
+    print(
+        f"{Style.BRIGHT}{Fore.RED}--gpu-auto automatically set to True.{Style.RESET_ALL}"
+    )
     argparser.add_argument("--group-by-host", action="store", default=True, type=bool)
     argparser.add_argument("--heads", type=int, help="The number of attention heads.")
     argparser.add_argument(
@@ -113,6 +122,7 @@ def parse_args():
         choices=["m", "b"],
         help="The downstream task: m for malicious domain classification or b for botnet detection.",
     )
+    argparser.add_argument("--loss", choices=["auto", "focal"], default="auto")
     argparser.add_argument("--lr", action="store", type=float, help="Learning rate")
     argparser.add_argument("--max-tokens", action="store", type=int)  # Deprecating
     argparser.add_argument("--omega", action="store", type=float)
@@ -226,47 +236,61 @@ def parse_args():
 
 
 def init_gpus(conf):
-    """Perform the necessary GPU-related initializations according to the specified `conf` dict.
+    """Perform the necessary GPU-related initializations according to the
+    specified `conf` dict.
 
-    :param conf: The current run configuration.
-    :type conf: dict
+    Args:
+        conf (dict): the current run configuration dict.
     """
-
-    # Get total number of GPUs
-    n_gpus = len(tf.config.list_physical_devices())
-
-    # If the gpu parameter contains -1, use all GPUs instead
-    if -1 in conf.get("gpu"):
-        conf["gpu"] = list(range(n_gpus))
-
-    # If multiple gpus are specified, run in distributed mode
-    if len(conf.get("gpu")) > 1:
-        conf["distribute"] = True
-
-        # if distribute, all devices must be visible, to avoid possible bugs
-        assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
-            "GPU"
-        )
-
-    # Otherwise if gpu is a single number, don't run in distribute mode
+    if conf.get("gpu_auto"):
+        # if --gpu-auto, automatically select the most free GPU
+        freeest_gpu_idx, _ = gpu_tools.get_freeest_gpu()
+        devices = gpu_tools.use_devices([freeest_gpu_idx])
     else:
-        conf["distribute"] = False
+        # set the gpu indexes in --gpu as visible and enable memory growth
+        devices = gpu_tools.use_devices(conf.get("gpu"))
 
-        # make only the current device visible to make sure others are not used
-        device = tf.config.list_physical_devices("GPU")[conf.get("gpu")[0]]
-        tf.config.set_visible_devices(device, "GPU")
-        if conf.get("verbose"):
-            print(f"[INFO] Set {device} as the only visible device.")
+    # if --gpu contains more than 1 index, enable distributed mode
+    conf["distribute"] = len(devices) > 1
 
-    # Enable memory growth on all visible devices
-    for device in tf.config.get_visible_devices("GPU"):
-        try:
-            tf.config.experimental.set_memory_growth(device, True)
-        except Exception as e:
-            print(
-                f"{Fore.RED}[ERROR] Cannot enable memory growth on device: {device}{Fore.RESET}"
-            )
-            sys.exit(e)
+    # await for available gpu memory
+    gpu_tools.await_avail_memory(conf.get("gpu"), min_bytes=12 * gpu_tools.GiB)
+
+    # # Get total number of GPUs
+    # n_gpus = len(tf.config.list_physical_devices())
+
+    # # If the gpu parameter contains -1, use all GPUs instead
+    # if -1 in conf.get("gpu"):
+    #     conf["gpu"] = list(range(n_gpus))
+
+    # # If multiple gpus are specified, run in distributed mode
+    # if len(conf.get("gpu")) > 1:
+    #     conf["distribute"] = True
+
+    #     # if distribute, all devices must be visible, to avoid possible bugs
+    #     assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
+    #         "GPU"
+    #     )
+
+    # # Otherwise if gpu is a single number, don't run in distribute mode
+    # else:
+    #     conf["distribute"] = False
+
+    #     # make only the current device visible to make sure others are not used
+    #     device = tf.config.list_physical_devices("GPU")[conf.get("gpu")[0]]
+    #     tf.config.set_visible_devices(device, "GPU")
+    #     if conf.get("verbose"):
+    #         print(f"[INFO] Set {device} as the only visible device.")
+
+    # # Enable memory growth on all visible devices
+    # for device in tf.config.get_visible_devices("GPU"):
+    #     try:
+    #         tf.config.experimental.set_memory_growth(device, True)
+    #     except Exception as e:
+    #         print(
+    #             f"{Fore.RED}[ERROR] Cannot enable memory growth on device: {device}{Fore.RESET}"
+    #         )
+    #         sys.exit(e)
 
 
 def build_model(model, conf, dist_strategy):
@@ -275,13 +299,25 @@ def build_model(model, conf, dist_strategy):
     )
     if conf.get("finetune"):
         # previously it was BinaryCrossentropy when the only downstream task was MDC (binary)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=False, reduction=loss_reduction
-        )
+        loss = None
+        if conf.get("loss") == "focal":
+            loss = SparseCategoricalFocalLoss(
+                gamma=2, from_logits=False, reduction=loss_reduction
+            )
+        else:
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(
+                from_logits=False, reduction=loss_reduction
+            )
     else:
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=False, reduction=loss_reduction
-        )
+        if conf.get("loss") == "focal":
+            loss = SparseCategoricalFocalLoss(
+                gamma=2, from_logits=False, reduction=loss_reduction
+            )
+        else:
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(
+                from_logits=False, reduction=loss_reduction
+            )
+
     with dist_strategy.scope():
         if model.lower() == "dns-gt":
             model = DNS_GT(conf, dist_strategy)
@@ -309,6 +345,7 @@ def main():
         runs_path="../runs",
         model_object=None,
         model_name=f"{args.model}{f'-{args.type}' if args.type else ''}",
+        task_name=args.labeling if args.finetune else None,
         run_name=args.run_name,
         start_from=args.start_from,
         verbose=True,
@@ -325,7 +362,7 @@ def main():
     conf_log = "\n".join(
         [
             f"{Fore.YELLOW if k in superseding_args and conf != superseding_args else ''}{indent(1)}{k:<20}: {v}{Fore.RESET}"
-            for (k, v) in conf.items()
+            for (k, v) in sorted(conf.items())
         ]
     )
     print(f"Configuration: \n{conf_log}")
@@ -498,7 +535,6 @@ def main():
         # ISSUE Decide if I should evaluate on train, test or both. Consider that:
         # (1) in any case the model is never trained on in_fold domains, even on train
         # (2) it may be easier to predict on sequences that the model has already seen
-        # NOTE I'm evaluating on test
 
         # Save predictions
         if not conf.get("skip_predictions"):
@@ -562,6 +598,10 @@ def main():
                 run_manager.run_path,
                 f"""roc-{conf.get("model")}{f"-{conf.get('type')}" if conf.get('type') else ""}{f"-{conf.get('test_partition')}-{conf.get('test_fold')}"}.png""",
             ),
+            n_classes={
+                "m": Constants._NCLASSES_MALICIOUS_CLASSIFICATION,
+                "b": Constants._NCLASSES_BOTNET_DETECTION,
+            }[args.labeling],
             verbose=True,
         )
 

@@ -560,8 +560,6 @@ class DNS_GT(tf.keras.Model):
                     )
 
                 class_weights = self.compute_class_weights(tf.boolean_mask(y, ~in_fold))
-                print(tf.boolean_mask(y, ~in_fold).shape)
-                print(tf.boolean_mask(pred, ~in_fold).shape)
                 loss = self.compiled_loss(
                     tf.boolean_mask(y, ~in_fold),
                     tf.boolean_mask(pred, ~in_fold),

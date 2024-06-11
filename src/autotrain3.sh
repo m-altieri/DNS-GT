@@ -10,6 +10,7 @@ for ((pt_epoch=$INC; pt_epoch<=PT_EPOCHS; pt_epoch+=$INC)); do
 		python3 train.py DNS-GT -r r3-"$pt_epoch"e --epochs $INC
 	else
 		python3 train.py DNS-GT -r r3-"$pt_epoch"e --epochs $INC --start-from r3-"$((pt_epoch-INC))"e
+	fi
 	
 	# after pretraining, run block in background to finetune on that pretraining and go on to pretrain with more epochs
 	(

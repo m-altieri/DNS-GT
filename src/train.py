@@ -244,7 +244,9 @@ def init_gpus(conf):
     """
     if conf.get("gpu_auto"):
         # if --gpu-auto, automatically select the most free GPU
-        freeest_gpu_idx = gpu_tools.await_avail_memory(-1, min_bytes=12 * gpu_tools.GiB)
+        freeest_gpu_idx, _ = gpu_tools.await_avail_memory(
+            -1, min_bytes=12 * gpu_tools.GiB
+        )
         devices = gpu_tools.use_devices([freeest_gpu_idx])
 
     else:

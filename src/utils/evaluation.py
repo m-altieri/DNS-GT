@@ -12,6 +12,8 @@ from pytftk.formatting import indent
 
 
 class Evaluation:
+    _VALID_TASK_FOLDERS = ["b", "m", "pretrained"]
+
     def __init__(self, run_path: str = "../runs"):
         self.run_path = run_path
         self.results = None
@@ -309,13 +311,13 @@ class Evaluation:
     ):
         """Computes results for all runs in runs_path.
         The runs folder is assumed to have structure:
-        runs > {model} > {run} > predictions > {csv files}.
+        runs > {model} > {task} > {run} > predictions > {csv files}.
         It outputs a single csv file with results for all runs.
 
         Args:
             runs_path (str): path of the runs folder.
             output_path (str): path of the output csv file (including file name).
-            verbose(bool): print debugging information. Defaults to False.
+            verbose (bool): print debugging information. Defaults to False.
 
         Raises:
             ValueError: if runs_path doesn't exist or output_path's parent folder
@@ -345,207 +347,232 @@ it's not a model (not a folder).{Fore.RESET}"
                     f"\n{indent(1)}Collecting results for model {Style.BRIGHT}{model}{Style.NORMAL}..."
                 )
 
-            for run in os.listdir(os.path.join(runs_path, model)):
-
-                # skip non-directories, such as the default.yaml or .gitignore file
-                if not os.path.isdir(os.path.join(runs_path, model, run)):
+            for task in os.listdir(os.path.join(runs_path, model)):
+                # skip directories that are not tasks, such as "_old"
+                if task not in __class__._VALID_TASK_FOLDERS:
                     if verbose:
                         print(
-                            f"{Fore.RED}{indent(2)}Skipping run {Style.BRIGHT}{run}{Style.NORMAL}: \
-it's not a run (not a folder).{Fore.RESET}"
+                            f"{Fore.RED}{indent(2)}Skipping task {Style.BRIGHT}"
+                            + f"{task}{Style.NORMAL}: it's not a valid task."
+                            + f"{Fore.RESET}"
                         )
                     continue
                 if verbose:
                     print(
-                        f"{indent(2)}Collecting results for run {Style.BRIGHT}{run}{Style.NORMAL}..."
+                        f"{indent(2)}Collecting results for task {Style.BRIGHT}"
+                        + f"{task}{Style.NORMAL}..."
                     )
 
-                # skip this run if there are no predictions, for example if it's
-                # a pretraining run
-                predictions_path = os.path.join(runs_path, model, run, "predictions")
-                if not os.path.exists(predictions_path):
+                for run in os.listdir(os.path.join(runs_path, model, task)):
+                    # skip non-directories, such as the default.yaml or .gitignore file
+                    if not os.path.isdir(os.path.join(runs_path, model, task, run)):
+                        if verbose:
+                            print(
+                                f"{Fore.RED}{indent(3)}Skipping run {Style.BRIGHT}"
+                                + f"{run}{Style.NORMAL}: it's not a run (not a folder).{Fore.RESET}"
+                            )
+                        continue
                     if verbose:
                         print(
-                            f"{Fore.RED}{indent(2)}Skipping run {Style.BRIGHT}{run}{Style.NORMAL}: \
-there are no predictions; it might be a pretraining run.{Fore.RESET}"
+                            f"{indent(3)}Collecting results for run {Style.BRIGHT}{run}{Style.NORMAL}..."
                         )
-                    continue
 
-                # <--- PREDICTIONS --- forse non c'è bisogno di collezionarle
-                # prediction_files = os.listdir(predictions_path)
-                # for prediction_file in prediction_files:
-                #     # get partition and fold from the csv file name
-                #     try:
-                #         partition = re.findall(
-                #             "predictions-partition(\d+)-fold\d+\.csv", prediction_file
-                #         )[0]
-                #         fold = re.findall(
-                #             "predictions-partition\d+-fold(\d+)\.csv", prediction_file
-                #         )[0]
-                #     except:
-                #         print(
-                #             f"Error while extracting partition or fold from \
-                #             prediction file {prediction_file}"
-                #         )
+                    # skip this run if there are no predictions, for example if
+                    # it's a pretraining run
+                    predictions_path = os.path.join(
+                        runs_path, model, task, run, "predictions"
+                    )
+                    if not os.path.exists(predictions_path):
+                        if verbose:
+                            print(
+                                f"{Fore.RED}{indent(3)}Skipping run {Style.BRIGHT}"
+                                + f"{run}{Style.NORMAL}: there are no predictions; "
+                                + f"it might be a pretraining run.{Fore.RESET}"
+                            )
+                        continue
 
-                #     df = pd.read_csv(os.path.join(predictions_path, prediction_file))
-                #     if preds is None:
-                #         preds = df
-                #     else:
-                #         preds.merge(df, on="domains")
-                # --->
+                    # <--- PREDICTIONS --- forse non c'è bisogno di collezionarle
+                    # prediction_files = os.listdir(predictions_path)
+                    # for prediction_file in prediction_files:
+                    #     # get partition and fold from the csv file name
+                    #     try:
+                    #         partition = re.findall(
+                    #             "predictions-partition(\d+)-fold\d+\.csv", prediction_file
+                    #         )[0]
+                    #         fold = re.findall(
+                    #             "predictions-partition\d+-fold(\d+)\.csv", prediction_file
+                    #         )[0]
+                    #     except:
+                    #         print(
+                    #             f"Error while extracting partition or fold from \
+                    #             prediction file {prediction_file}"
+                    #         )
 
-                results_path = os.path.join(runs_path, model, run, "results.pkl")
-                if not os.path.exists(results_path):  # skip if there are no results
-                    if verbose:
-                        print(
-                            f"{Fore.RED}{indent(2)}Skipping run {Style.BRIGHT}{run}{Style.NORMAL}: \
-there are no results; it might be a pretraining run.{Fore.RESET}"
-                        )
-                    continue
+                    #     df = pd.read_csv(os.path.join(predictions_path, prediction_file))
+                    #     if preds is None:
+                    #         preds = df
+                    #     else:
+                    #         preds.merge(df, on="domains")
+                    # --->
 
-                with open(results_path, "rb") as f:
-                    results = pickle.load(f)
-                    print(results)
+                    results_path = os.path.join(
+                        runs_path, model, task, run, "results.pkl"
+                    )
+                    if not os.path.exists(results_path):  # skip if there are no results
+                        if verbose:
+                            print(
+                                f"{Fore.RED}{indent(3)}Skipping run {Style.BRIGHT}"
+                                + f"{run}{Style.NORMAL}: there are no results; it "
+                                + f"might be a pretraining run.{Fore.RESET}"
+                            )
+                        continue
 
-                    if "model" not in collected_results:
-                        collected_results["model"] = []
-                    collected_results["model"].append(model)
+                    with open(results_path, "rb") as f:
+                        results = pickle.load(f)
 
-                    if "run" not in collected_results:
-                        collected_results["run"] = []
-                    collected_results["run"].append(run)
+                        if "model" not in collected_results:
+                            collected_results["model"] = []
+                        collected_results["model"].append(model)
 
-                    # store class-wise precision, recall and f1
-                    if type(results[0.5]["precision_classwise"]) != list:
-                        results[0.5]["precision_classwise"] = [
+                        if "run" not in collected_results:
+                            collected_results["run"] = []
+                        collected_results["run"].append(run)
+
+                        # store class-wise precision, recall and f1
+                        if type(results[0.5]["precision_classwise"]) != list:
+                            results[0.5]["precision_classwise"] = [
+                                results[0.5]["precision_classwise"]
+                            ]
+                        for c, class_precision in enumerate(
                             results[0.5]["precision_classwise"]
-                        ]
-                    for c, class_precision in enumerate(
-                        results[0.5]["precision_classwise"]
-                    ):
-                        if f"precision-{c}" not in collected_results:
-                            collected_results[f"precision-{c}"] = []
-                        collected_results[f"precision-{c}"].append(class_precision)
+                        ):
+                            if f"precision-{c}" not in collected_results:
+                                collected_results[f"precision-{c}"] = []
+                            collected_results[f"precision-{c}"].append(class_precision)
 
-                    if type(results[0.5]["recall_classwise"]) != list:
-                        results[0.5]["recall_classwise"] = [
+                        if type(results[0.5]["recall_classwise"]) != list:
+                            results[0.5]["recall_classwise"] = [
+                                results[0.5]["recall_classwise"]
+                            ]
+                        for c, class_recall in enumerate(
                             results[0.5]["recall_classwise"]
-                        ]
-                    for c, class_recall in enumerate(results[0.5]["recall_classwise"]):
-                        if f"recall-{c}" not in collected_results:
-                            collected_results[f"recall-{c}"] = []
-                        collected_results[f"recall-{c}"].append(class_recall)
+                        ):
+                            if f"recall-{c}" not in collected_results:
+                                collected_results[f"recall-{c}"] = []
+                            collected_results[f"recall-{c}"].append(class_recall)
 
-                    if type(results[0.5]["f1_classwise"]) != list:
-                        results[0.5]["f1_classwise"] = [results[0.5]["f1_classwise"]]
-                    for c, class_f1score in enumerate(results[0.5]["f1_classwise"]):
-                        if f"f1-{c}" not in collected_results:
-                            collected_results[f"f1-{c}"] = []
-                        collected_results[f"f1-{c}"].append(class_f1score)
+                        if type(results[0.5]["f1_classwise"]) != list:
+                            results[0.5]["f1_classwise"] = [
+                                results[0.5]["f1_classwise"]
+                            ]
+                        for c, class_f1score in enumerate(results[0.5]["f1_classwise"]):
+                            if f"f1-{c}" not in collected_results:
+                                collected_results[f"f1-{c}"] = []
+                            collected_results[f"f1-{c}"].append(class_f1score)
 
-                    # store aggregated precision, recall and f1
-                    if "precision_micro" not in collected_results:
-                        collected_results["precision_micro"] = []
-                    collected_results["precision_micro"].append(
-                        results[0.5]["precision_micro"]
-                    )
+                        # store aggregated precision, recall and f1
+                        if "precision_micro" not in collected_results:
+                            collected_results["precision_micro"] = []
+                        collected_results["precision_micro"].append(
+                            results[0.5]["precision_micro"]
+                        )
 
-                    if "precision_macro" not in collected_results:
-                        collected_results["precision_macro"] = []
-                    collected_results["precision_macro"].append(
-                        results[0.5]["precision_macro"]
-                    )
+                        if "precision_macro" not in collected_results:
+                            collected_results["precision_macro"] = []
+                        collected_results["precision_macro"].append(
+                            results[0.5]["precision_macro"]
+                        )
 
-                    if "precision_weighted" not in collected_results:
-                        collected_results["precision_weighted"] = []
-                    collected_results["precision_weighted"].append(
-                        results[0.5]["precision_weighted"]
-                    )
+                        if "precision_weighted" not in collected_results:
+                            collected_results["precision_weighted"] = []
+                        collected_results["precision_weighted"].append(
+                            results[0.5]["precision_weighted"]
+                        )
 
-                    if "recall_micro" not in collected_results:
-                        collected_results["recall_micro"] = []
-                    collected_results["recall_micro"].append(
-                        results[0.5]["recall_micro"]
-                    )
+                        if "recall_micro" not in collected_results:
+                            collected_results["recall_micro"] = []
+                        collected_results["recall_micro"].append(
+                            results[0.5]["recall_micro"]
+                        )
 
-                    if "recall_macro" not in collected_results:
-                        collected_results["recall_macro"] = []
-                    collected_results["recall_macro"].append(
-                        results[0.5]["recall_macro"]
-                    )
+                        if "recall_macro" not in collected_results:
+                            collected_results["recall_macro"] = []
+                        collected_results["recall_macro"].append(
+                            results[0.5]["recall_macro"]
+                        )
 
-                    if "recall_weighted" not in collected_results:
-                        collected_results["recall_weighted"] = []
-                    collected_results["recall_weighted"].append(
-                        results[0.5]["recall_weighted"]
-                    )
+                        if "recall_weighted" not in collected_results:
+                            collected_results["recall_weighted"] = []
+                        collected_results["recall_weighted"].append(
+                            results[0.5]["recall_weighted"]
+                        )
 
-                    if "f1_micro" not in collected_results:
-                        collected_results["f1_micro"] = []
-                    collected_results["f1_micro"].append(results[0.5]["f1_micro"])
+                        if "f1_micro" not in collected_results:
+                            collected_results["f1_micro"] = []
+                        collected_results["f1_micro"].append(results[0.5]["f1_micro"])
 
-                    if "f1_macro" not in collected_results:
-                        collected_results["f1_macro"] = []
-                    collected_results["f1_macro"].append(results[0.5]["f1_macro"])
+                        if "f1_macro" not in collected_results:
+                            collected_results["f1_macro"] = []
+                        collected_results["f1_macro"].append(results[0.5]["f1_macro"])
 
-                    if "f1_weighted" not in collected_results:
-                        collected_results["f1_weighted"] = []
-                    collected_results["f1_weighted"].append(results[0.5]["f1_weighted"])
+                        if "f1_weighted" not in collected_results:
+                            collected_results["f1_weighted"] = []
+                        collected_results["f1_weighted"].append(
+                            results[0.5]["f1_weighted"]
+                        )
 
-                    if "auc" not in collected_results:
-                        collected_results["auc"] = []
-                    collected_results["auc"].append(results["auc"])
+                        if "auc" not in collected_results:
+                            collected_results["auc"] = []
+                        collected_results["auc"].append(results["auc"])
 
-                    # accuracy should be a single value for all classes iirc
-                    if "accuracy" not in collected_results:
-                        collected_results["accuracy"] = []
-                    collected_results["accuracy"].append(results[0.5]["accuracy"])
+                        # accuracy should be a single value for all classes iirc
+                        if "accuracy" not in collected_results:
+                            collected_results["accuracy"] = []
+                        collected_results["accuracy"].append(results[0.5]["accuracy"])
 
-                    # <-- POTENZIALMENTE UTILE
-                    # thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-                    # per_threshold_f1 = [
-                    #     results[threshold]["f1"] if threshold in results else None
-                    #     for threshold in thresholds
-                    # ]
+                        # <-- POTENZIALMENTE UTILE
+                        # thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+                        # per_threshold_f1 = [
+                        #     results[threshold]["f1"] if threshold in results else None
+                        #     for threshold in thresholds
+                        # ]
 
-                    # # in realtà questi due possono essere derivati a posteriori
-                    # # da ciò che sta sopra
-                    # try:
-                    #     best_threshold = thresholds[
-                    #         per_threshold_f1.index(max(per_threshold_f1))
-                    #     ]
-                    # except:
-                    #     best_threshold = -1
-                    # collected_results["f1_best"].append(
-                    #     results[best_threshold]["f1"]
-                    #     if best_threshold in results
-                    #     else None
+                        # # in realtà questi due possono essere derivati a posteriori
+                        # # da ciò che sta sopra
+                        # try:
+                        #     best_threshold = thresholds[
+                        #         per_threshold_f1.index(max(per_threshold_f1))
+                        #     ]
+                        # except:
+                        #     best_threshold = -1
+                        # collected_results["f1_best"].append(
+                        #     results[best_threshold]["f1"]
+                        #     if best_threshold in results
+                        #     else None
+                        # )
+                        # collected_results["accuracy_best"].append(
+                        #     results[best_threshold]["accuracy"]
+                        #     if best_threshold in results
+                        #     else None
+                        # )
+                        # POTENZIALMENTE UTILE --->
+
+                    if verbose:
+                        print(
+                            f"{Fore.GREEN}Collected results for model "
+                            + f"{Style.BRIGHT}{model}{Style.NORMAL} and run "
+                            + f"{Style.BRIGHT}{run}{Style.NORMAL}.{Fore.RESET}"
+                        )
+                    # print(
+                    #     f"Added preds for {model}/{run} of shape {df.shape}, new shape {preds.shape}"
                     # )
-                    # collected_results["accuracy_best"].append(
-                    #     results[best_threshold]["accuracy"]
-                    #     if best_threshold in results
-                    #     else None
-                    # )
-                    # POTENZIALMENTE UTILE --->
-
-                if verbose:
-                    print(
-                        f"{Fore.GREEN}Collected results for model \
-{Style.BRIGHT}{model}{Style.NORMAL} and run {Style.BRIGHT}{run}{Style.NORMAL}.{Fore.RESET}"
-                    )
-                # print(
-                #     f"Added preds for {model}/{run} of shape {df.shape}, new shape {preds.shape}"
-                # )
-
-        # print(preds)
 
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path))
 
-        # preds.to_csv(output_path)
-
-        print(collected_results)
         collected_results = pd.DataFrame(collected_results)
         print(collected_results)
         collected_results.to_csv(output_path)
+        print(
+            f"{Fore.GREEN}Results saved to {Style.BRIGHT}{output_path}{Style.NORMAL}.{Fore.RESET}"
+        )

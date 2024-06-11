@@ -244,53 +244,19 @@ def init_gpus(conf):
     """
     if conf.get("gpu_auto"):
         # if --gpu-auto, automatically select the most free GPU
-        freeest_gpu_idx, _ = gpu_tools.get_freeest_gpu()
+        freeest_gpu_idx = gpu_tools.await_avail_memory(-1, min_bytes=12 * gpu_tools.GiB)
         devices = gpu_tools.use_devices([freeest_gpu_idx])
+
     else:
         # set the gpu indexes in --gpu as visible and enable memory growth
         devices = gpu_tools.use_devices(conf.get("gpu"))
 
-    # if --gpu contains more than 1 index, enable distributed mode
-    conf["distribute"] = len(devices) > 1
+        # if --gpu contains more than 1 index, enable distributed mode
+        conf["distribute"] = len(devices) > 1
 
-    # await for available gpu memory
-    gpu_tools.await_avail_memory(conf.get("gpu"), min_bytes=12 * gpu_tools.GiB)
-
-    # # Get total number of GPUs
-    # n_gpus = len(tf.config.list_physical_devices())
-
-    # # If the gpu parameter contains -1, use all GPUs instead
-    # if -1 in conf.get("gpu"):
-    #     conf["gpu"] = list(range(n_gpus))
-
-    # # If multiple gpus are specified, run in distributed mode
-    # if len(conf.get("gpu")) > 1:
-    #     conf["distribute"] = True
-
-    #     # if distribute, all devices must be visible, to avoid possible bugs
-    #     assert tf.config.get_visible_devices("GPU") == tf.config.list_physical_devices(
-    #         "GPU"
-    #     )
-
-    # # Otherwise if gpu is a single number, don't run in distribute mode
-    # else:
-    #     conf["distribute"] = False
-
-    #     # make only the current device visible to make sure others are not used
-    #     device = tf.config.list_physical_devices("GPU")[conf.get("gpu")[0]]
-    #     tf.config.set_visible_devices(device, "GPU")
-    #     if conf.get("verbose"):
-    #         print(f"[INFO] Set {device} as the only visible device.")
-
-    # # Enable memory growth on all visible devices
-    # for device in tf.config.get_visible_devices("GPU"):
-    #     try:
-    #         tf.config.experimental.set_memory_growth(device, True)
-    #     except Exception as e:
-    #         print(
-    #             f"{Fore.RED}[ERROR] Cannot enable memory growth on device: {device}{Fore.RESET}"
-    #         )
-    #         sys.exit(e)
+        # normally --gpu can contain a list of GPUs, so I have to check for all
+        # of them to be free
+        gpu_tools.await_avail_memories(conf.get("gpu"), min_bytes=12 * gpu_tools.GiB)
 
 
 def build_model(model, conf, dist_strategy):

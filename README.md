@@ -170,5 +170,4 @@ Optionally, it's possible to balance the training classes automatically with the
 **Contacts:**
 
 Massimiliano ALTIERI \
-massimiliano.altieri@uniba.it \
 massimiliano.altieri@ec.europa.eu
